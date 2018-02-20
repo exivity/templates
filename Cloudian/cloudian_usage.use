@@ -1,0 +1,127 @@
+#==================== Introduction ====================#
+#
+#  This is a template Extractor for Cloudian consumption
+#
+#  Ensure to provide the following:
+#
+#  - uri
+#  - username
+#  - password
+#
+#==================== Introduction ====================#
+
+#====================== Validation ======================#
+
+if (${ARGC} != 1)
+{
+	print This requires 1 argument, the day to collect usage for in yyyyMMdd format.
+	terminate
+} else {
+	var dataDate = ${ARG_1}
+}
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${dataDate}
+if (${date.STATUS} != MATCH) {
+	print Argument 1 error: ${dataDate} is not in yyyyMMdd format
+	terminate
+}
+
+#====================== Validation ======================#
+
+
+public var hostname = "your.hostname.local"
+
+# Default port is 19443 for API (this is a different port as the web UI)
+public var port = "19443"
+
+# API user is sysadmin, with default password public
+public var username = "sysadmin"
+public var password = "public"
+public var granularity = "daily"
+
+loglevel 0
+var JSON_dir = "system/extracted/cloudian/json"
+var CSV_dir = "system/extracted/cloudian"
+
+var groupsJSON = "${JSON_dir}\groups.json"
+var usageJSON = "${JSON_dir}\usage.json"
+
+# var exportdir = "cloudian"
+var export_file = "${CSV_dir}\${dataDate}_cloudian_usage.csv"
+#
+#=================  End Configuration ==================#
+
+
+#/ Get an token from vCenter 
+print "Getting Cloudian Groups ..."
+
+# Set up the HTTP request parameters
+set http_username ${username}
+set http_password ${password}
+set http_authtype basic
+set http_savefile "${groupsJSON}"
+# Get the groups from cloudian
+buffer groups = http GET "https://${hostname}:${port}/group/list"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+
+# clear http_headers
+
+csv "cloudian_usage" = ${export_file}
+csv add_headers "cloudian_usage" groupId userId region operation uri timestamp value count 
+csv add_headers "cloudian_usage" whitelistValue whitelistCount maxValue whitelistMaxValue ip
+csv add_headers "cloudian_usage" bucket averageValue whitelistAverageValue
+csv fix_headers "cloudian_usage" 
+
+foreach $JSON{groups} as this_group
+{
+	var groupId = $JSON(this_group).[groupId]
+	print Obtaining usage details for ${groupId} ....
+	set http_savefile ${usageJSON}
+	buffer group_usage = http GET "https://${hostname}:${port}/usage?id=${groupId}|*&operation=SB&startTime=${dataDate}0000&endTime=${dataDate}2359&granularity=hour"
+	
+	if (${HTTP_STATUS_CODE} != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+		print The server response was:
+		json format {group_usage} 
+		print {group_usage}
+		print Exiting
+		terminate
+	}
+
+  var usage_test = $JSON{group_usage}
+
+  if ( ${usage_test.LENGTH} > 0 ) {
+    print "groupId ${groupId} has no usage, moving to next ..."
+  } else {
+    print "Obtaining usage records for groupId ${groupId} ..."
+    foreach $JSON{group_usage} as usage_record {
+      csv write_field cloudian_usage $JSON(usage_record).[groupId]
+      csv write_field cloudian_usage $JSON(usage_record).[userId]
+      csv write_field cloudian_usage $JSON(usage_record).[region]
+      csv write_field cloudian_usage $JSON(usage_record).[operation]
+      csv write_field cloudian_usage $JSON(usage_record).[uri]
+      csv write_field cloudian_usage $JSON(usage_record).[timestamp]
+      csv write_field cloudian_usage $JSON(usage_record).[value]
+      csv write_field cloudian_usage $JSON(usage_record).[count]
+      csv write_field cloudian_usage $JSON(usage_record).[whitelistValue]
+      csv write_field cloudian_usage $JSON(usage_record).[whitelistCount]
+      csv write_field cloudian_usage $JSON(usage_record).[maxValue]
+      csv write_field cloudian_usage $JSON(usage_record).[whitelistMaxValue]
+      csv write_field cloudian_usage $JSON(usage_record).[ip]
+      csv write_field cloudian_usage $JSON(usage_record).[bucket]
+      csv write_field cloudian_usage $JSON(usage_record).[averageValue]
+      csv write_field cloudian_usage $JSON(usage_record).[whitelistAverageValue]
+    }
+  }
+}
+
+print JSON retrieved  
+	
+clear http_headers

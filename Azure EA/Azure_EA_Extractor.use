@@ -1,0 +1,113 @@
+loglevel WARN
+#################################################################
+# This USE script will download Azure EA billing csv's          #
+#                                                               #
+# This needs two parameters: 
+# - from date in YYYYMMDD format
+# - to date in YYYYMMDD format
+#
+# --------------------------------------------------------------#
+# NOTES:                                                        #
+# - This script can be extended to include subscription details #
+#                                                               #
+#################################################################
+
+
+if (${ARGC} != 2)
+{
+	print This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format
+	terminate
+} else {
+	var today = ${ARG_1}
+	var tomorrow = ${ARG_2}
+}
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${today}
+if (${date.STATUS} != MATCH) {
+	print Argument 1 error: ${today} is not in today format
+	terminate
+}
+
+match date "^([0-9]{8})$" ${tomorrow}
+if (${date.STATUS} != MATCH) {
+	print Argument 2 error: ${tomorrow} is not in today format
+	terminate
+}
+
+#
+# Set global configuration
+#
+public var EA_endpoint = "https://ea.azure.com" # end point of the Azure EA API
+public var EA_enrollment = "123456789" # The enrollment number of the EA subscription
+public var EA_secret = "<please provide your secret>" # fill in your secret, and optionally use the "Encrypt variable" option
+public var exportdir = "system/extracted/AzureEA" # make sure this directory exist before running this extractor
+public var usage_export_file = "${exportdir}/${today}_ea_usage.csv"
+
+#
+#=================  End Configuration ==================#
+
+
+#=================  Date Formatting  ==================#
+
+# Extract the day, month and year fields from the dates
+match day "^[0-9]{6}([0-9]{2})" ${today}
+if (${day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${today})
+	terminate
+} else {
+	var day = ${day.RESULT}
+}
+
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${today}
+if (${day.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${today})
+	terminate
+} else {
+	var month = ${month.RESULT}
+}
+
+match year "^([0-9]{4})[0-9]{4}" ${today}
+if (${year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${today})
+	terminate
+} else {
+	var year = ${year.RESULT}
+}
+
+match day "^[0-9]{6}([0-9]{2})" ${tomorrow}
+if (${day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${tomorrow})
+	terminate
+} else {
+	var tomorrow_day = ${day.RESULT}
+}
+
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${tomorrow}
+if (${day.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${tomorrow})
+	terminate
+} else {
+	var tomorrow_month = ${month.RESULT}
+}
+
+match year "^([0-9]{4})[0-9]{4}" ${tomorrow}
+if (${year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${tomorrow})
+	terminate
+} else {
+	var tomorrow_year = ${year.RESULT}
+}
+
+#=================  End Date Formatting ==================#
+
+print Retrieving Azure usage data
+
+# Set up the HTTP request parameters
+set http_header "Authorization: Bearer ${EA_secret}"	
+buffer usage = http get "https://consumption.azure.com/v2/enrollments/${EA_enrollment}/usagedetails/download?startTime=${year}-${month}-${day}&endTime=${tomorrow_year}-${tomorrow_month}-${tomorrow_day}"
+save {usage} as ${usage_export_file}
+discard {usage}
+
+Print Succesfully retrieved Azure data!
+

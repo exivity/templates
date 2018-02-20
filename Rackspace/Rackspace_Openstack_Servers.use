@@ -1,0 +1,118 @@
+#==================== Configuration ================================#
+#
+#   This is a template Extractor for Rackspace OpenStack Servers
+#
+#   For more information on customizing this script:
+#   - please visit docs.exivity.com
+#
+#
+
+if (${ARGC} != 1)
+{
+	print This requires 1 argument: the day to collect usage for in yyyyMMdd format
+	terminate
+} else {
+	var today = ${ARG_1}
+}
+
+public var token_endpoint = "https://identity.api.rackspacecloud.com/v2.0/tokens"
+public var username = "<Your-User-Name>"
+public var apiKey = "<Your-API-Key>"
+# Tenant ID could also be obtained from token json potentially
+public var tenant_id = "<Your-Tenant-ID>"
+
+
+var auth_body = "{\"auth\":{\"RAX-KSKEY:apiKeyCredentials\":{\"username\":\"${username}\",\"apiKey\":\"${apiKey}\"}}}"
+public var servers_endpoint = "https://lon.servers.api.rackspacecloud.com/v2/${tenant_id}/servers/detail" # standard using servers end point, but you are free to change this according to Rackspace API docs
+
+public loglevel WARN # adjust log detail to: DEBUG, INFO, WARN 
+public var JSON_dir = "system\extracted\rackspace\json" # directory should exist
+public var CSV_dir = "system\extracted\rackspace" # directory should exist
+
+var vmsJSON = "${JSON_dir}\rackspace_vms.json"
+var vmJSON = "${JSON_dir}\rackspace_vm.json"
+
+var vm_details_export_file = "${CSV_dir}\${today}_rackspace_vms_details.csv"
+
+#
+#=================  End Configuration ==================#
+
+#=================  Date Formatting  ==================#
+
+
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${today}
+if (${date.STATUS} != MATCH) {
+	print Argument 1 error: ${today} is not in today format
+	terminate
+}
+
+#=================  End Date Formatting ==================#
+
+
+#================= Date Formatting ======================#
+
+#/ Get an token from vCenter 
+print "Getting Rackspace OpenStack API Token"
+
+# Set up the HTTP request parameters
+set http_body data ${auth_body}
+print "body data is: ${auth_body}"
+set http_header "Content-Type: application/json"
+set http_savefile "${JSON_dir}\http_savefile.json"
+# Get VC Token and cache it in a buffer called {token}
+print "calling endpoint: ${token_endpoint}"
+buffer token = http POST ${token_endpoint}
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+clear http_headers
+
+# save the access token
+var access_token = "$JSON{token}.[access].[token].[id]"
+discard {token}
+
+set http_header "X-Auth-Token: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_header "Accept: application/json"
+set http_savefile ${vmsJSON}
+print Getting All VM's JSON as ${vmsJSON}
+buffer vms = http GET "${servers_endpoint}"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+	print The server response was:
+	json format {vms} 
+	print {vms}
+	print Exiting
+	terminate
+}
+
+print VM ID's obtained successfully.
+
+csv "vm_details" = ${vm_details_export_file}
+csv add_headers "vm_details" status updated hostId vm_state flavor id name created tenant_id accessIPv4 progress power_state
+csv fix_headers "vm_details"
+
+foreach $JSON{vms}.[servers] as this_vm
+{
+	csv write_field vm_details $JSON(this_vm).[status]
+	csv write_field vm_details $JSON(this_vm).[updated]
+	csv write_field vm_details $JSON(this_vm).[hostId]
+	csv write_field vm_details $JSON(this_vm).[OS-EXT-STS:vm_state]
+	csv write_field vm_details $JSON(this_vm).[flavor].[id]
+	csv write_field vm_details $JSON(this_vm).[id]
+	csv write_field vm_details $JSON(this_vm).[name]
+	csv write_field vm_details $JSON(this_vm).[created]
+	csv write_field vm_details $JSON(this_vm).[tenant_id]
+	csv write_field vm_details $JSON(this_vm).[accessIPv4]
+	csv write_field vm_details $JSON(this_vm).[progress]
+	csv write_field vm_details $JSON(this_vm).[OS-EXT-STS:power_state]
+}
+print JSON retrieved  
+
+clear http_headers

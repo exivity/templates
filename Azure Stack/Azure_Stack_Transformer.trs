@@ -1,0 +1,78 @@
+option loglevel = INFO
+option embed = YES
+
+#
+# Import usage from Azure Stack 
+# This is extracted using Azure Stack extractor (see github)
+#
+import "system\extracted\AzureStack\${dataDate}_stack_usage.csv" source azure alias stack_usage
+
+# import example rates
+import "system\extracted\AzureStack\rates\azure_stack_example_rates.csv" source azure alias stack_rates
+
+# normalise data
+rename column subscriptionId to "Subscription ID"
+rename column meterId to "Meter ID"
+# don't need the record ID, name and type
+delete columns id name type
+
+# get the service and image type tags
+create mergedcolumn ServiceType from additionalInfo /.ServiceType...(.+).,./
+create mergedcolumn ImageType from additionalInfo /.ImageType...(.+)\"/
+delete column additionalInfo
+
+# set the resource group, provider and resource id
+split resourceUri using /
+rename column resourceUri_split5 to "Resource Group"
+rename column resourceUri_split7 to "Provider"
+create mergedcolumn "Resource ID" separator " " from resourceUri_split9 ServiceType ImageType
+delete columns resourceUri_split1	resourceUri_split2	resourceUri_split3	resourceUri_split4	resourceUri_split5	resourceUri_split6	resourceUri_split7	resourceUri_split8	resourceUri_split9
+
+# Uppercase meters and create unique services
+uppercase values in column "Meter ID"
+create mergedcolumn service_key from "Meter ID"
+
+# import columns from the rate example csv using service_key correlation
+correlate azure.stack_rates.Category azure.stack_rates."service_name" azure.stack_rates.unit azure.stack_rates."Additional info" azure.stack_rates.rate azure.stack_rates.cogs azure.stack_rates.interval using "service_key"
+delete column service_key
+create mergedcolumn service_key separator "|" from "Meter ID" "ServiceType"
+
+# auto generate VM Size Type service names
+create mergedcolumn vms_size_service separator " " from "ServiceType" "service_name"
+where ([service_key] =~ /.*[a-zA-Z]*_.*/) {
+  set service_name as vms_size_service
+}
+
+# create the services based off the service_key and using quantity
+create columns from "service_key" using quantity
+
+# Set dummy values for columns that don't have a value set
+option overwrite = NO
+set rate to "0"
+set cogs to "0"
+set unit to "Unit/Hours"
+set interval to individually
+set Category to "Azure Stack Generic Resources"
+
+# cleanup
+delete columns resourceUri tags meterId usageStartTime	usageEndTime type
+
+# export data for troubleshooting
+export azure.stack_usage as "stack_usage.csv" 
+
+option services = overwrite
+
+finish
+
+services {
+  service_type = manual
+  description_col = "service_name" # column name
+  category_col = Category # column with category value
+  instance_col = "Resource ID" # the unique instance i.e. vm-id, username, etc
+  usages_col = "service_key" # the column containing the name of the consumed service
+  set_rate_using = rate # the column containing the rate values
+  set_cogs_using = cogs # the column containing the cogs values
+  interval_col  = interval # the column containing the interval (i.e. individually)
+  unit_label_col = unit # the column containing the unit label
+  consumption_col = quantity # the column containing the consumed quantity
+}

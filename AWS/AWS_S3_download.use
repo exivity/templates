@@ -1,0 +1,224 @@
+#################################################################
+# This USE script will download a file from an S3 bucket        #
+#                                                               #
+# This needs one parameter: YYYYMMDD
+# --------------------------------------------------------------#
+# NOTES:                                                        #
+# - This script hardcodes the Region as eu-central-1 but this   #
+#   can easily be changed or made a parameter as required       #
+#################################################################
+
+# Set this to 1 to enable a debug trace output when the script is run
+var DEBUG = "0"
+
+# This is the text that appears to the left and right of debug headings 
+var banner = "________"
+
+######################################################################
+# Customer specific values here (these can be encrypted if required) #
+#                                                                    #
+public var bucket = "<your bucket name>"
+public var LinkedAccountId = "<your linked account ID>"
+public var AWS_Region = "us-east-1"  # make sure to provide the correct region
+public var AWS_Service = "s3"  
+public var access_key = "<your access key>"
+public var secret_key = "<your secret>"
+
+#                                                                    #
+# End customer specific values                                       #
+######################################################################
+
+# This is the SHA256 hash of an empty string (required if making a request with no body)
+var hashed_empty_string = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+ 
+#
+# compile the filename using the date
+#
+var dataDate = "${ARG_1}"
+# Obtain the month from the Date
+match dataMonth "^[0-9]{4}([0-9]{2})[0-9]{2}" ${dataDate}
+if (${dataMonth.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${dataDate})
+	terminate
+} else {
+	var dataMonth = ${dataMonth.RESULT}
+}
+
+match dataYear "^([0-9]{4})[0-9]{4}" ${dataDate}
+if (${dataYear.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${dataDate})
+	terminate
+} else {
+	var dataYear = ${dataYear.RESULT}
+}
+
+var s3_object = "${LinkedAccountId}-aws-billing-detailed-line-items-with-resources-and-tags-${dataYear}-${dataMonth}.csv.zip"
+var save_file = "${s3_object}"
+
+#########################################################################################
+# SETUP                                                                                 #
+# Create a number of variables to represent the various components that the steps       #
+# below are going to use in order to construct a correct AWS request                    #
+#---------------------------------------------------------------------------------------#
+# This is the request syntax for retrieving an object from a bucket:                    #
+# GET /<ObjectName> HTTP/1.1                                                            #
+# Host: <BucketName>.s3.amazonaws.com                                                   #
+# Date: date                                                                            #
+# Authorization: authorization string                                                   #
+#########################################################################################
+
+var HTTP_Method = "GET"
+var URI = "${s3_object}"
+ var query_params
+# Must have an empty variable for 'no query parameters' = ""
+#var host = "${bucket}.s3-${AWS_Region}.amazonaws.com"
+var host = "${bucket}.s3.amazonaws.com"
+var date = "${OSI_TIME_UTC}"
+
+# Initialise config variables specific to this script
+var save_path = "system/extracted/aws"
+
+
+
+#########################################################################################
+# STEP 1                                                                                #
+# Create a canonical request as documented at                                           #
+# at https://docs.aws.amazon.com/general/latest/gr/sigv4-create-canonical-request.html  #
+#########################################################################################
+
+# 1a) Canonical Headers string
+#     - This is part of the Canonical Request string which will be generated below.
+#     - The Canonical Headers are a list of all HTTP headers (including values but
+#       with the header names in lowercase) separated by newline characters and in
+#       alphabetical order
+
+var canonical_headers = "date:${date}${NEWLINE}host:${host}${NEWLINE}x-amz-content-sha256:${hashed_empty_string}${NEWLINE}"
+if (${DEBUG} == 1) {
+	print ${NEWLINE}${banner} Canonical Headers ${banner}${NEWLINE}${canonical_headers}
+}
+
+# 1b) Signed Headers string
+#     - This is a list of the header names that were used to create the Canonical Headers,
+#       separated by a semicolon
+#     - This list MUST be in alphabetical order
+#     - NOTE: There is no trailing newline on this variable (we need to use it both with and without
+#             a newline later so we explicitly add a ${NEWLINE} when we need to)
+
+var signed_headers = "date;host;x-amz-content-sha256"
+if (${DEBUG} == 1) {
+	print ${banner} Signed Headers ${banner}${NEWLINE}${signed_headers}${NEWLINE}
+}
+
+# 1c) Canonical Request
+#     - The above are now combined to form a Canonical Request, which is created as follows:
+#     - HTTPRequestMethod + '\n' + URI + '\n' + QueryString + '\n' + CanonicalHeaders + '\n' +
+#       SignedHeaders + '\n' + Base16 encoded SHA256 Hash of any body content
+#     - Note that the Canonical Headers are followed by an extra newline (they have one already)
+
+var canonical_request = "${HTTP_Method}${NEWLINE}/${URI}${NEWLINE}${query_params}${NEWLINE}${canonical_headers}${NEWLINE}${signed_headers}${NEWLINE}${hashed_empty_string}"
+if (${DEBUG} == 1) {
+	print ${banner} Canonical Request ${banner}${NEWLINE}${canonical_request}${NEWLINE}
+}
+
+# 1d) Hash of the Canonical Request
+#     - This is an SHA256 hash of the Canonical Request string
+
+hash sha256 canonical_request as hashed_canonical_request
+
+######################################################################################
+# STEP 2                                                                             #
+# Create a 'string to sign' as documented at                                         #
+# at https://docs.aws.amazon.com/general/latest/gr/sigv4-create-string-to-sign.html  #
+#------------------------------------------------------------------------------------#
+# In a nutshell this is the following components separated by newlines:              #
+# 2a) Hash algorithm designation                                                     #
+# 2b) UTC date in YYYYMMDD'T'HHMMSS'Z' format                                        #
+# 2c) credential scope (date/region/service/"aws4_request")                          #
+# 2d) base16-encoded hashed canonical request                                        #
+######################################################################################
+
+# Extract the yyyyMMdd from the UTC time
+match yyyyMMdd "(.{8})" ${date}
+var yyyyMMdd = "${yyyyMMdd.RESULT}"
+
+ var string_to_sign = "AWS4-HMAC-SHA256${NEWLINE}${date}${NEWLINE}${yyyyMMdd}/${AWS_Region}/${AWS_Service}/aws4_request${NEWLINE}${hashed_canonical_request}"
+# var string_to_sign = "AWS4-HMAC-SHA256${NEWLINE}${date}${NEWLINE}${yyyyMMdd}/${AWS_Service}/aws4_request${NEWLINE}${hashed_canonical_request}"
+
+if (${DEBUG} == 1) {
+	print ${banner} String to sign ${banner}${NEWLINE}${string_to_sign}${NEWLINE}
+}
+
+######################################################################################
+# STEP 3                                                                             #
+# Calculate the signature for AWS Signature Version 4 as documented at:              #
+# at https://docs.aws.amazon.com/general/latest/gr/sigv4-calculate-signature.html    #
+#                                                                                    #
+######################################################################################
+
+# 3a) Derive a signing key and apply it to the string to sign
+#     Use the secret access key to create the following hash-based auth codes:
+#     a) ksecret (our secret access key)
+#     b) kDate = HMAC("AWS4" + kSecret, Date) NOTE: yyyyMMdd only
+#     c) kRegion = HMAC(kDate, Region)
+#     d) kService = HMAC(kRegion, Service)
+#     e) kSigning = HMAC(kService, "aws4_request")
+#     f) HMAC the string_to_sign with the key derived using steps a - e
+
+var signature = "${string_to_sign}"
+
+if (${DEBUG} == 1) {
+	print ${banner}Deriving Signing Key using these parameters${banner}${NEWLINE}${secret_key} ${yyyyMMdd} ${AWS_Region} ${AWS_Service}${NEWLINE}${NEWLINE}
+}
+
+# The following statement takes care of all the details listed above
+# Notes: 
+#       - The word 'signature' in the statement below is the NAME of a variable and
+#         NOT a reference to its contents
+#       - The contents of this variable are the string to sign, and after the statement
+#         has completed these contents will have been modified to be the authorization
+#         signature for that string
+#
+AWS_sign_string signature using ${secret_key} ${yyyyMMdd} ${AWS_Region} ${AWS_Service}
+
+######################################################################################
+# STEP 4                                                                             #
+# Add the signing information to the request as documented at:                       #
+# https://docs.aws.amazon.com/general/latest/gr/sigv4-add-signature-to-request.html  #
+#                                                                                    #
+######################################################################################
+
+var credential_scope = "${yyyyMMdd}/${AWS_Region}/${AWS_Service}/aws4_request"
+
+if (${DEBUG} == 1) {
+	print ${banner} Credential Scope ${banner}${NEWLINE}${credential_scope}${NEWLINE}${NEWLINE}
+}
+
+ var auth_header = "Authorization: AWS4-HMAC-SHA256 Credential=${access_key}/${credential_scope}, SignedHeaders=${signed_headers}, Signature=${signature}"
+if (${DEBUG} == 1) {
+	print ${banner} Authorization Header ${banner}${NEWLINE}${auth_header}${NEWLINE}
+}
+set http_header ${auth_header}
+
+#######################################################
+# STEP 5                                              #
+# Execute the query                                   #
+#-----------------------------------------------------#
+# Note that all the headers that were included in the #
+# signed_headers created in STEP 1 must be set before #
+# the request is executed                             #
+#######################################################
+
+set http_header "Date: ${date}"
+set http_header "x-amz-content-sha256: ${hashed_empty_string}"
+set http_savefile ${save_path}/${save_file}
+
+set http_progress yes
+print "Downloading ${host}/${URI}:"
+http GET https://${host}/${URI}
+ 
+buffer billing = FILE ${save_path}/${save_file}
+unzip {billing}
+save {billing} as ${save_path}/${save_file}.csv
+discard {billing}
+
+print ${NEWLINE}Done

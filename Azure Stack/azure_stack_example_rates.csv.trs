@@ -1,0 +1,21 @@
+﻿# EXAMPLE AZURE STACK RATES FILE - COPY THE LINES BELOW TO: "system\extracted\AzureStack\rates\azure_stack_example_rates.csv"
+Category,service_key,service_name,unit,Additional info,rate,cogs,interval
+Azure Stack Network,F271A8A388C44D93956A063E1D2FA80B,Static IP Address Usage,IP/hours,Count of IP addressess used,0.25,0,individually
+Azure Stack Network,9E2739BA86744796B465F64674B822BA,Dynamic IP Address Usage,IP/hours,Count of IP addressess used,0.1,0,individually
+Azure Stack Storage,B4438D5D-453B-4EE1-B42A-DC72E377F1E4,Table Capacity,GB/hours,Total capacity consumed by tables,0.000166,0,individually
+Azure Stack Storage,B5C15376-6C94-4FDD-B655-1A69D138ACA3,Page Blob Capacity,GB/hours,Total capacity consumed by page blobs,0.000055,0,individually
+Azure Stack Storage,B03C6AE7-B080-4BFA-84A3-22C800F315C6,Queue Capacity,GB/hours,Total capacity consumed by queue,0.000166,0,individually
+Azure Stack Storage,09F8879E-87E9-4305-A572-4B7BE209F857,Block Blob Capacity,GB/hours,Total capacity consumed by block blobs,0.000055,0,individually
+Azure Stack Storage,B9FF3CD0-28AA-4762-84BB-FF8FBAEA6A90,Table Transactions,"Requests/10,000s","Table service requests (in 10,000s)",0.000045,0,individually
+Azure Stack Storage,50A1AEAF-8ECA-48A0-8973-A5B3077FEE0D,Table Data Transfer In,GB,Table service data ingress in GB,0.00031,0,individually
+Azure Stack Storage,1B8C1DEC-EE42-414B-AA36-6229CF199370,Table Data Transfer Out,GB,Table service data egress in GB,0.00051,0,individually
+Azure Stack Storage,43DAF82B-4618-444A-B994-40C23F7CD438,Blob Transactions,"Requests/10,000s","Blob service requests (in 10,000s)",0.00025,0,individually
+Azure Stack Storage,9764F92C-E44A-498E-8DC1-AAD66587A810,Blob Data Transfer In,GB,Blob service data ingress in GB,0.00025,0,individually
+Azure Stack Storage,3023FEF4-ECA5-4D7B-87B3-CFBC061931E8,Blob Data Transfer Out,GB,Blob service data egress in GB,0.00035,0,individually
+Azure Stack Storage,EB43DD12-1AA6-4C4B-872C-FAF15A6785EA,Queue Transactions,"Requests/10,000s","Queue service requests (in 10,000s)",0.001,0,individually
+Azure Stack Storage,E518E809-E369-4A45-9274-2017B29FFF25,Queue Data Transfer In,GB,Queue service data ingress in GB,0.0025,0,individually
+Azure Stack Storage,DD0A10BA-A5D6-4CB6-88C0-7D585CEF9FC2,Queue Data Transfer Out,GB,Queue service data egress in GB,0.0035,0,individually
+Azure Stack Compute,FAB6EB84-500B-4A09-A8CA-7358F8BBAEA5,Base VM Size Hours,CPU/hours,Number of vcores times minutes the VM ran,0.25,0,individually
+Azure Stack Compute,9CD92D4C-BAFD-4492-B278-BEDC2DE8232A,Windows VM Size Hours,CPU/hours,Number of vcores times minutes the VM ran,0.1,0,individually
+Azure Stack Key Vault,EBF13B9F-B3EA-46FE-BF54-396E93D48AB4,Key Vault transactions,Request count in 10000s,Number of REST API requests received by Key Vault data plane,0.20691,0,individually
+Azure Stack Compute,6DAB500F-A4FD-49C4-956D-229BB9C8C793,VM Size Hours,VM/hours,Captures both Base and Windows VM. Does not adjust for vcores,0.5,0,individually

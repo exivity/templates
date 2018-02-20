@@ -1,0 +1,127 @@
+#################################################################
+#                                                               #
+# This USE script will download the latest CSP rate card 		#
+#                                                               #
+# This does not require paramaters								#
+#																#
+#################################################################
+
+#==================== Configuration ====================#
+#
+public var client_id = "client id" # Exvity Partner Center Application ID
+public var username = "username"
+public var password = "password"
+public var MyDomain = "csp domain"
+
+var online = yes
+public var CSV_dir = "system\extracted\AzureCSP_rates" # make sure this directory does exist before running this extractor
+public var JSON_dir = "${CSV_dir}\json" # make sure this directory does exist before running this extractor
+
+
+var ratesJSON = "${JSON_dir}\AzureRates.json"
+var ratesCSV = "${CSV_dir}\csp_rates_per_threshold.csv"
+
+public var var currency = "EUR" # make sure to set this to your tenant currency
+public var var region = "NL" # make sure to set this to your tenant region
+
+#
+#=================  End Configuration ==================#
+
+
+if (${online} == yes) {	
+	print "Getting AD Token"
+	# Set up the HTTP request parameters
+	set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid"
+	set http_header "Content-Type: application/x-www-form-urlencoded"
+
+	# Get AD Token and cache it in a buffer called {token}
+	buffer token = http POST "https://login.windows.net/${MyDomain}/oauth2/token"
+	if (${HTTP_STATUS_CODE} != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+		print Exiting
+		terminate
+	}
+
+	# Create a variable called ${access_token} from the AD token in {token}
+	var access_token = $JSON{token}.[access_token]
+	discard {token}
+
+	print "Getting AU Token"
+	# Reset headers as we want to create a new Authorization: header
+	clear http_headers
+	
+	# Set up the HTTP request parameters
+	var partnerRoot = "https://api.partnercenter.microsoft.com"
+	set http_header "Content-Type: application/x-www-form-urlencoded"
+	set http_header "Authorization: Bearer ${access_token}"	
+	set http_body data "grant_type=jwt_token"
+
+	# Get the new token into a buffer called {token}
+	buffer token = http POST ${partnerRoot}/generatetoken
+	if (${HTTP_STATUS_CODE} != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+		print Exiting
+		terminate
+	}
+
+	# Create a variable called ${AUtoken} from the App+User token in {token}
+	var AUtoken = $JSON{token}.[access_token]
+	discard {token}
+	
+	# Get ratecards
+	set http_savefile ${ratesJSON}
+	print Getting ratecard JSON as ${ratesJSON}
+	http GET ${partnerRoot}/v1/ratecards/azure&currency=${currency}&region=${region}
+	if (${HTTP_STATUS_CODE} != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+		print Exiting
+		terminate
+	}
+	print JSON retrieved
+}
+
+buffer "rates" = FILE ${ratesJSON}	
+csv "ratecard" = ${ratesCSV}
+
+csv add_headers "ratecard" meter_id meter_name tags rate_threshold rate category subcategory region unit includedQuantity effectiveDate
+csv fix_headers "ratecard"
+
+foreach $JSON{rates}.[meters] as this_meter
+{
+	# For each meter, set variables to define the known fields ...
+	var id = $JSON(this_meter).[id]
+	var name = $JSON(this_meter).[name]
+	var category = $JSON(this_meter).[category]
+	var subcategory = $JSON(this_meter).[subcategory]
+	var region = $JSON(this_meter).[region]
+	var unit = $JSON(this_meter).[unit]
+	var included = $JSON(this_meter).[includedQuantity]
+	var ef_date = $JSON(this_meter).[effectiveDate]
+
+	# Build list of tags
+	var tags = ""
+	foreach $JSON(this_meter).[tags] as this_tag
+	{
+		# Build a list of tags separated by |
+		if (${this_tag.COUNT} == 1) {
+			var tags = "${this_tag.VALUE}"
+		} else {
+			var tags = "${tags}|${this_tag.VALUE}"
+		}
+	}
+	
+	# Create an output row for each rate threshold
+	foreach $JSON(this_meter).[rates] as this_rate
+	{
+		# ... then for each rate get the name and value
+		var threshold = ${this_rate.NAME}
+		var rate = ${this_rate.VALUE}
+		
+		# Render the output row
+		csv write_fields "ratecard" ${id} ${name} ${tags} ${threshold} ${rate} ${category} 
+		csv write_fields "ratecard" ${subcategory} ${region} ${unit} ${included} ${ef_date}
+	}
+}
+csv close "ratecard"
+discard {rates}
+print Created csv file: ${ratesCSV}
