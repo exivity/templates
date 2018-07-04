@@ -1,7 +1,9 @@
 option loglevel = INFO
 option overwrite = NO
 # make sure to point this to the directory where the Extractor writes its files
-import "system/extracted/AzureEA/${dataDate}_ea_usage.csv" source azure alias ea
+import "system/extracted/AzureEA/${dataDate}_ea_usage.csv" source azure alias ea options {
+  skip = 2
+}
 
 # normalise column headers
 rename column "Subscription Name" to "Subscription Name"
@@ -10,8 +12,8 @@ lowercase values in column "Resource Group"
 # rename column "InstanceId" to "InstanceId"
 rename column "CostCenter" to "Cost Center"
 rename column "UnitOfMeasure" to "unit"
-rename column "ConsumedQuantity" to "rate"
-rename column "ResourceRate" to "quantity"
+rename column "ConsumedQuantity" to "quantity"
+rename column "ResourceRate" to "rate"
 
 # When using non-English Azure, more columns require renaming 
 #
