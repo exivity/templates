@@ -85,6 +85,7 @@ if (${year.STATUS} != MATCH) {
 print Sending request for usage data ... 
 
 # Set up the HTTP request parameters
+set http_header "Authorization: Bearer ${EA_secret}"
 buffer usage = http post "https://consumption.azure.com/v2/enrollments/${EA_enrollment}/usagedetails/submit?startTime=${year}-${month}-${day}&endTime=${year}-${month}-${day}"
 # save {usage} as ${usage_export_file}
 # discard {usage}
