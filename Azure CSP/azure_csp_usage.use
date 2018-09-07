@@ -1,8 +1,14 @@
 #################################################################
-# This USE script will download the CSP Usage Data    			#
-#                                                               #
-# This needs two parameters, from and to date in: YYYYMMDD		#
-#																#
+# 
+#  This USE script will download the Azure CSP Usage Data.    
+#  Please consult https://docs.exivity.com/ for more info.
+#
+# ==========================================================
+#                                                               
+# This needs two parameters, FROM and TO date in: YYYYMMDD
+#
+# NOTE: FROM and TO date should not overlap more then 1 month
+#																
 #################################################################
 
 if (${ARGC} != 2)
@@ -38,25 +44,25 @@ if (${date.STATUS} != MATCH) {
 # If either of those options are set to 'yes' then get_token must
 # also be set to yes
 #
-public loglevel WARN
+loglevel WARN
 
-public var client_id = "client id"
-public var password = "password"
-public var username = "username"
-public var MyDomain = "csp domain"
-public var exportdir = "system\extracted\AzureCSP"  # make sure this directory exists!
+public var client_id = "guid-of-your-partner-center-application" # Application ID of the Partner Center Web Application
+public var username = "username@yourdomain.onmicrosoft.com" # user name with access to the Patner Center API
+public var password = "YourPassword" # Password for the above user name
+public var MyDomain = "yourdomain.onmicrosoft.com" # Your CSP domain, usually ###.onmicrosoft.com
 
+var exportdir = "system/extracted/AzureCSP"
 var get_token = yes
 var online_customers = yes
 var online_subscriptions = yes
 
-
-var customer_export_file = "${exportdir}\${today}_csp_customers.csv"
-var subscriptions_export_file = "${exportdir}\${today}_csp_subscriptions.csv"
-var usage_export_file = "${exportdir}\${today}_csp_usage.csv"
+var customer_export_file = "${exportdir}/${today}_csp_customers.csv"
+var subscriptions_export_file = "${exportdir}/${today}_csp_subscriptions.csv"
+var usage_export_file = "${exportdir}/${today}_csp_usage.csv"
 
 # directory should exist!
-var json_filedir = "${exportdir}\json"
+var json_filedir = "${exportdir}/json"
+
 #
 #=================  End Configuration ==================#
 
@@ -111,291 +117,291 @@ if (${year.STATUS} != MATCH) {
 	var tomorrow_year = ${year.RESULT}
 }
 
-# Format of a start or end date argument to Azure CSP is: 2016-12-01T00:00:00%2b01:00 
-#var start_time = ${year}-${month}-${day}T00:00:00%2b01:00
-#var end_time = ${tomorrow_year}-${tomorrow_month}-${tomorrow_day}T00:00:00%2b01:00
-var start_time = ${year}-${month}-${day}T00:00:00-00:00
-var end_time = ${tomorrow_year}-${tomorrow_month}-${tomorrow_day}T00:00:00-00:00
-
 #=================  End Date Formatting ==================#
 
 
-if (${get_token} == yes)
-{
-	# Get an AD token from login.windows.net
-    print "Getting AD Token"
-	
-	# Set up the HTTP request parameters
-	set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
-	set http_header "Content-Type: application/x-www-form-urlencoded"
-	set http_savefile "${json_filedir}\http_savefile.json"
-	# Get AD Token and cache it in a buffer called {token}
-	buffer token = http POST "https://login.windows.net/${MyDomain}/oauth2/token"
-	if (${HTTP_STATUS_CODE} != 200) {
-		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-		print The server response was:
-		json format {token} 
-		print {token}
-		terminate
-	}
+var date_diff = ${tomorrow_day}
+print this is date_diff being tomorrow: ${date_diff}
+var date_diff -= ${day}
+print this is date_diff plus day: ${date_diff}
+var next_day = ${day}
 
-	# Create a variable called ${access_token} from the AD token in {token}
-	var access_token = $JSON{token}.[access_token]
-	discard {token}
+loop date_range ${date_diff} {
+  print "This is date_range loop number: ${date_range.COUNT}"
+  var next_day += 1
+  # Format of a start or end date argument to Azure CSP is: 2016-12-01T00:00:00%2b01:00 
+  var start_time = ${year}-${month}-${day}T00:00:00-00:00
+  var end_time = ${tomorrow_year}-${tomorrow_month}-${next_day}T00:00:00-00:00
+  
+  var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
+  var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
+  var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
 
-	# Use the access_token to get an App_User token
+  if (${get_token} == yes)
+  {
+  	# Get an AD token from login.windows.net
+      print "Getting AD Token"
+  	
+  	# Set up the HTTP request parameters
+  	set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_savefile "${json_filedir}/http_savefile.json"
+  	# Get AD Token and cache it in a buffer called {token}
+  	buffer token = http POST "https://login.windows.net/${MyDomain}/oauth2/token"
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print The server response was:
+  		json format {token} 
+  		print {token}
+  		terminate
+  	}
+  
+  	# Create a variable called ${access_token} from the AD token in {token}
+  	var access_token = $JSON{token}.[access_token]
+  	discard {token}
+  
+  	# Use the access_token to get an App_User token
     print "Getting AU Token"
-	# Reset headers as we want to create a new Authorization: header
-	clear http_headers
-	
-	# Set up the HTTP request parameters
-	var partnerRoot = "https://api.partnercenter.microsoft.com"
-	set http_header "Content-Type: application/x-www-form-urlencoded"
-	set http_header "Authorization: Bearer ${access_token}"	
-	set http_body data "grant_type=jwt_token"
-
-	# Get the new token into a buffer called {token}
-	buffer token = http POST ${partnerRoot}/generatetoken
-	if (${HTTP_STATUS_CODE} != 200) {
-		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-		print The server response was:
-		json format {token} 
-		print {token}
-		terminate
-	}
-
-	# Create a variable called ${AUtoken} from the App+User token in {token}
-	# 2017-07 - App+User is not needed. Setting AUToken to access_token
-	var AUtoken = ${access_token}
-	discard {token}
-}
-
-if (${online_customers} == no) {
-	# Offline mode: retrieve all JSON from local files on disk
-	buffer customers = FILE "${json_filedir}\customers.json"
-
-} else {	
-	# Online mode: retrieve all JSON from Azure API
+  	# Reset headers as we want to create a new Authorization: header
+  	clear http_headers
+  	
+  	# Set up the HTTP request parameters
+  	var partnerRoot = "https://api.partnercenter.microsoft.com"
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_header "Authorization: Bearer ${access_token}"	
+  	set http_body data "grant_type=jwt_token"
+  
+  	# Get the new token into a buffer called {token}
+  	buffer token = http POST ${partnerRoot}/generatetoken
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print The server response was:
+  		json format {token} 
+  		print {token}
+  		terminate
+  	}
+  
+  	# Create a variable called ${AUtoken} from the App+User token in {token}
+  	# 2017-07 - App+User is not needed. Setting AUToken to access_token
+  	var AUtoken = ${access_token}
+  	discard {token}
+  }
+  
+  if (${online_customers} == no) {
+  	# Offline mode: retrieve all JSON from local files on disk
+  	buffer customers = FILE "${json_filedir}/customers.json"
+  
+  } else {	
+  	# Online mode: retrieve all JSON from Azure API
     # Use the AUtoken to get a list of customers (and export them as CSV)
     print "Getting customer list"
-	clear http_headers
-	set http_header "Accept: application/json"
-	set http_header "Authorization: Bearer ${AUtoken}"	
-	buffer customers = http GET "${partnerRoot}/v1/customers"
-	if (${HTTP_STATUS_CODE} != 200) {
-		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-		print Exiting
-		terminate
-	}
-	json format {customers}
-	save {customers} as "${json_filedir}\customers.json"
+  	clear http_headers
+  	set http_header "Accept: application/json"
+  	set http_header "Authorization: Bearer ${AUtoken}"	
+  	buffer customers = http GET "${partnerRoot}/v1/customers"
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print Exiting
+  		terminate
+  	}
+  	json format {customers}
+  	save {customers} as "${json_filedir}/customers.json"
+  }
+  
+  print Exporting customers to ${customer_export_file}
+  csv "customers" = "${customer_export_file}"
+  csv add_headers "customers" ID tenantId Name Domain Type Relationship
+  csv fix_headers "customers"
+  
+  # Iterate through the customers and populate the file
+  foreach $JSON{customers}.[items] as this_customer
+  {
+  	# Define the fields to export to match the headers
+  	csv write_field customers $JSON(this_customer).[id]
+  	csv write_field customers $JSON(this_customer).[companyProfile].[tenantId]
+  	csv write_field customers $JSON(this_customer).[companyProfile].[companyName]
+  	csv write_field customers $JSON(this_customer).[companyProfile].[domain]
+  	csv write_field customers $JSON(this_customer).[attributes].[objectType]
+  	csv write_field customers $JSON(this_customer).[relationshipToPartner]
+  }
+  csv close customers
+  	
+  csv "subscriptions" = ${subscriptions_export_file}
+  csv add_headers "subscriptions" customer_id tenant_id companyName subscription_id offerId offerName quantity unitType creationDate effectiveStartDate commitmentEndDate status autoRenewEnabled billingType contractType
+  csv fix_headers "subscriptions"
+  
+  print Exporting subscriptions to ${subscriptions_export_file}
+  foreach $JSON{customers}.[items] as this_customer
+  {
+  	# For each customer ID ...
+  	var c_name = $JSON(this_customer).[companyProfile].[companyName]
+  	var c_id = $JSON(this_customer).[id]
+  	print Processing customer ${this_customer.COUNT} (${c_name})
+  
+  	# ... get their subscriptions  
+  	if (${online_subscriptions} == no) {
+  		buffer subscriptions = FILE "${json_filedir}/${today}_subs_${c_id}.json"
+  	} else {
+  		# Create the customer savefiles for offline use and get the data from Azure
+  		buffer subscriptions = http get ${partnerRoot}/v1/customers/${c_id}/subscriptions
+  		json format {subscriptions}
+  		save {subscriptions} as "${json_filedir}/${today}_subs_${c_id}.json"
+  	}
+  	
+  	var reseller_code = $JSON{subscriptions}.[code]
+  	if ("${reseller_code}" != 20002 ) 
+  	{
+  		# For each subscription export the required CSV fields
+  		foreach $JSON{subscriptions}.[items] as this_subscription {
+  			csv write_field "subscriptions" ${c_id}
+  			csv write_field "subscriptions" $JSON(this_customer).[companyProfile].[tenantId]
+  			csv write_field "subscriptions" $JSON(this_customer).[companyProfile].[companyName]
+  			csv write_field "subscriptions" $JSON(this_subscription).[id]
+  			csv write_field "subscriptions" $JSON(this_subscription).[offerId]
+  			csv write_field "subscriptions" $JSON(this_subscription).[offerName]
+  			csv write_field "subscriptions" $JSON(this_subscription).[quantity]
+  			csv write_field "subscriptions" $JSON(this_subscription).[unitType]
+  			csv write_field "subscriptions" $JSON(this_subscription).[creationDate]
+  			csv write_field "subscriptions" $JSON(this_subscription).[effectiveStartDate]
+  			csv write_field "subscriptions" $JSON(this_subscription).[commitmentEndDate]
+  			csv write_field "subscriptions" $JSON(this_subscription).[status]
+  			csv write_field "subscriptions" $JSON(this_subscription).[autoRenewEnabled]
+  			csv write_field "subscriptions" $JSON(this_subscription).[billingType]
+  			csv write_field "subscriptions" $JSON(this_subscription).[contractType]   
+  		}
+  	} else {
+  		# 
+  		print Skipping customer ${c_name} with id: ${c_id} - this is not an acccount managed by your reseller
+  	}
+  }	
+  csv close "subscriptions"
+  
+  print Retrieving Azure usage data
+  
+  csv "usage" = ${usage_export_file}
+  csv add_headers "usage" customer_id subscription_id usageStartTime usageEndTime
+  csv add_headers "usage" resource_id resource_name resource_category resource_subcategory
+  csv add_headers "usage" quantity unit resourceUri location partNumber orderNumber objectType region
+  csv fix_headers "usage"
+  
+  foreach $JSON{customers}.[items] as this_customer
+  {
+  	# For each customer ID ...
+  	var customer_id = $JSON(this_customer).[id]
+  	print Searching subscriptions of customer id ${customer_id} for Azure usage
+  	# ... get their subscriptions  
+  	buffer subscriptions = FILE "${json_filedir}/${today}_subs_${customer_id}.json"
+  	
+  	# this is to check for === does not have a reseller relationship with customer CAID  === errprs
+  	var reseller_code = $JSON{subscriptions}.[code]
+  	print Reseller code is now: $JSON{subscriptions}.[code]
+  	if ("${reseller_code}" != 20002 ) 
+  	{
+  		# For each subscription that has an offerName of Microsoft Azure
+  		foreach $JSON{subscriptions}.[items] as this_subscription {		
+  			var offerName = $JSON(this_subscription).[offerName]
+  			if ("${offerName}" == "Microsoft Azure")
+  			{
+  				# Get the subscription ID
+  				var subscription_id = $JSON(this_subscription).[id]
+  
+  				# Assume there will be no continuation required
+  				var continuationToken = none
+  
+  				# We'll loop here as there may be continuation required which will involve
+  				# additional HTTP requests for the usage for this customer
+  				var totalrecords = 0
+  				loop usageloop {
+  					# Query the usage for the customer_id and subscription_id
+  					if (${usageloop.COUNT} == 1) {
+  						# Initial request
+  						print Found Microsoft Azure subscription (subscription id: ${subscription_id})
+  						print Getting up to 1000 usage records ...
+  						clear http_headers
+  						set http_header "Accept: application/json"
+  						set http_header "Authorization: Bearer ${AUtoken}"
+  
+  						print getting usage for start_time=${start_time}
+  						buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
+  						json format {usage}
+  						save {usage} as "${json_filedir}\${today}_usage_${customer_id}_${subscription_id}.json"
+  					} else {
+  						# Need to use the continuation token
+  						clear http_headers
+  						set http_header "Accept: application/json"
+  						set http_header "Authorization: Bearer ${AUtoken}"
+  						set http_header "MS-ContinuationToken: ${continuationToken}"
+  						print Calling: "${partnerRoot}/v1/${continuation_uri}"
+  						buffer usage = http GET "${partnerRoot}/v1/${continuation_uri}"
+  						json format {usage}
+  						save {usage} as "${json_filedir}/${today}_usage_${customer_id}_${subscription_id}_${usageloop.COUNT}.json"
+  					}
+  					if (${HTTP_STATUS_CODE} != 200) {
+  						print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  						print failing to obtain use for customer ${customer_id} with subscription id ${subscription_id}
+  						
+  					}
+  
+  					# Check the total count returned
+  					var usagecount = $JSON{usage}.[totalCount]
+  
+  						if (${usagecount} == 1000) {
+  							# Extract the continuation token
+  							foreach $JSON{usage}.[links].[next].[headers] as this_header {
+  								var hkey = $JSON(this_header).[key]
+  								if (${hkey} == MS-ContinuationToken) {
+  									# Get the continuation token 
+  									var continuationToken = $JSON(this_header).[value]
+  									# Get the continuation URI for the next call
+  									var continuation_uri = $JSON{usage}.[links].[next].[uri]
+  									print Continuation URI is: ${continuation_uri}
+  									exit_loop
+  								}
+  							}
+  						} 
+  					
+  					# Render the usage as a CSV file
+  					foreach $JSON{usage}.[items] as this_item {
+  						csv write_fields "usage" ${customer_id} ${subscription_id}
+  						csv write_fields "usage" $JSON(this_item).[usageStartTime] $JSON(this_item).[usageEndTime]
+  						csv write_fields "usage" $JSON(this_item).[resource].[id] $JSON(this_item).[resource].[name]
+  						csv write_fields "usage" $JSON(this_item).[resource].[category] $JSON(this_item).[resource].[subcategory]
+  						csv write_fields "usage" $JSON(this_item).[quantity] $JSON(this_item).[unit]
+  						csv write_fields "usage" $JSON(this_item).[instanceData].[resourceUri]
+  						csv write_fields "usage" $JSON(this_item).[instanceData].[location]
+  						csv write_fields "usage" $JSON(this_item).[instanceData].[partNumber]
+  						csv write_fields "usage" $JSON(this_item).[instanceData].[orderNumber]
+  						csv write_fields "usage" $JSON(this_item).[attributes].[objectType]
+  						csv write_fields "usage" $JSON(this_item).[resource].[region]
+  						
+  					}
+  					
+  					if (${usagecount} == 1000) {
+  						print ${totalrecords} usage records received, getting up to 1000 more ...
+  						var totalrecords += 1000
+  					} else {
+  						var totalrecords += ${usagecount}
+  						print ${totalrecords} usage records received
+  						# No more continuation required
+  						exit_loop
+  					}
+  				} # End loop
+  			} # End if
+  		} # End foreach
+  	} # End if reseller_code
+  }	
+  csv close "usage"
+  discard {customers}
+  discard {subscriptions}
+  discard {usage}
+  
+  # when running in loop, we can skip getting a new token,
+  # obtaining customers, and subscriptions
+  var get_token = no
+  var online_customers = no
+  var online_subscriptions = no
+  
+  # increase day with 1 in crease we are running for a date range
+  var day += 1
 }
-
-print Exporting customers to ${customer_export_file}
-csv "customers" = "${customer_export_file}"
-csv add_headers "customers" ID tenantId Name Domain Type Relationship
-csv fix_headers "customers"
-
-# Iterate through the customers and populate the file
-foreach $JSON{customers}.[items] as this_customer
-{
-	# Define the fields to export to match the headers
-	csv write_field customers $JSON(this_customer).[id]
-	csv write_field customers $JSON(this_customer).[companyProfile].[tenantId]
-	csv write_field customers $JSON(this_customer).[companyProfile].[companyName]
-	csv write_field customers $JSON(this_customer).[companyProfile].[domain]
-	csv write_field customers $JSON(this_customer).[attributes].[objectType]
-	csv write_field customers $JSON(this_customer).[relationshipToPartner]
-}
-csv close customers
-	
-csv "subscriptions" = ${subscriptions_export_file}
-csv add_headers "subscriptions" customer_id tenant_id companyName subscription_id offerId offerName quantity unitType creationDate effectiveStartDate commitmentEndDate status autoRenewEnabled billingType contractType
-csv fix_headers "subscriptions"
-
-print Exporting subscriptions to ${subscriptions_export_file}
-foreach $JSON{customers}.[items] as this_customer
-{
-	# For each customer ID ...
-	var c_name = $JSON(this_customer).[companyProfile].[companyName]
-	var c_id = $JSON(this_customer).[id]
-	print Processing customer ${this_customer.COUNT} (${c_name})
-
-	# ... get their subscriptions  
-	if (${online_subscriptions} == no) {
-		buffer subscriptions = FILE "${json_filedir}\${today}_subs_${c_id}.json"
-	} else {
-		# Create the customer savefiles for offline use and get the data from Azure
-		buffer subscriptions = http get ${partnerRoot}/v1/customers/${c_id}/subscriptions
-		json format {subscriptions}
-		save {subscriptions} as "${json_filedir}\${today}_subs_${c_id}.json"
-	}
-	
-	var reseller_code = $JSON{subscriptions}.[code]
-	if ("${reseller_code}" != 20002 ) 
-	{
-		# For each subscription export the required CSV fields
-		foreach $JSON{subscriptions}.[items] as this_subscription {
-			csv write_field "subscriptions" ${c_id}
-			csv write_field "subscriptions" $JSON(this_customer).[companyProfile].[tenantId]
-			csv write_field "subscriptions" $JSON(this_customer).[companyProfile].[companyName]
-			csv write_field "subscriptions" $JSON(this_subscription).[id]
-			csv write_field "subscriptions" $JSON(this_subscription).[offerId]
-			csv write_field "subscriptions" $JSON(this_subscription).[offerName]
-			csv write_field "subscriptions" $JSON(this_subscription).[quantity]
-			csv write_field "subscriptions" $JSON(this_subscription).[unitType]
-			csv write_field "subscriptions" $JSON(this_subscription).[creationDate]
-			csv write_field "subscriptions" $JSON(this_subscription).[effectiveStartDate]
-			csv write_field "subscriptions" $JSON(this_subscription).[commitmentEndDate]
-			csv write_field "subscriptions" $JSON(this_subscription).[status]
-			csv write_field "subscriptions" $JSON(this_subscription).[autoRenewEnabled]
-			csv write_field "subscriptions" $JSON(this_subscription).[billingType]
-			csv write_field "subscriptions" $JSON(this_subscription).[contractType]   
-		}
-	} else {
-		# 
-		print Skipping customer ${c_name} with id: ${c_id} - this is not an acccount managed by your reseller
-	}
-}	
-csv close "subscriptions"
-
-print Retrieving Azure usage data
-
-csv "usage" = ${usage_export_file}
-csv add_headers "usage" customer_id subscription_id usageStartTime usageEndTime
-csv add_headers "usage" resource_id resource_name resource_category resource_subcategory
-csv add_headers "usage" quantity unit resourceUri location partNumber orderNumber objectType region
-csv fix_headers "usage"
-
-
-foreach $JSON{customers}.[items] as this_customer
-{
-	# For each customer ID ...
-	var customer_id = $JSON(this_customer).[id]
-	print Searching subscriptions of customer id ${customer_id} for Azure usage
-	# ... get their subscriptions  
-	buffer subscriptions = FILE "${json_filedir}\${today}_subs_${customer_id}.json"
-	
-	# this is to check for === does not have a reseller relationship with customer CAID  === errprs
-	var reseller_code = $JSON{subscriptions}.[code]
-	print Reseller code is now: $JSON{subscriptions}.[code]
-	if ("${reseller_code}" != 20002 ) 
-	{
-		# For each subscription that has an offerName of Microsoft Azure
-		foreach $JSON{subscriptions}.[items] as this_subscription {		
-			var offerName = $JSON(this_subscription).[offerName]
-			if ("${offerName}" == "Microsoft Azure")
-			{
-				# Get the subscription ID
-				var subscription_id = $JSON(this_subscription).[id]
-
-				# Assume there will be no continuation required
-				var continuationToken = none
-				#print trying to set testcount...
-				# is this a valid record?
-				#$var testcount = $JSON{usage}.[totalCount]
-				#print Current subscription usage records total count: "${testcount}"
-				
-				# We'll loop here as there may be continuation required which will involve
-				# additional HTTP requests for the usage for this customer
-				var totalrecords = 0
-				loop usageloop {
-					# Query the usage for the customer_id and subscription_id
-					if (${usageloop.COUNT} == 1) {
-						# Initial request
-						print Found Microsoft Azure subscription (subscription id: ${subscription_id})
-						print Getting up to 1000 usage records ...
-						clear http_headers
-						set http_header "Accept: application/json"
-						set http_header "Authorization: Bearer ${AUtoken}"
-						#set http_savefile "${json_filedir}\${today}_usage_${customer_id}_${subscription_id}.json"
-						
-						
-						print getting usage for start_time=${start_time}
-						buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
-						json format {usage}
-						save {usage} as "${json_filedir}\${today}_usage_${customer_id}_${subscription_id}.json"
-					} else {
-						# Need to use the continuation token
-						clear http_headers
-						set http_header "Accept: application/json"
-						set http_header "Authorization: Bearer ${AUtoken}"
-						set http_header "MS-ContinuationToken: ${continuationToken}"
-						print Calling: "${partnerRoot}/v1/${continuation_uri}"
-						buffer usage = http GET "${partnerRoot}/v1/${continuation_uri}"
-						#buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?today=${today}&end_time=${end_time}&granularity=${granularity}&continuation_token=${continuationToken}"
-						json format {usage}
-						save {usage} as "${json_filedir}\${today}_usage_${customer_id}_${subscription_id}_${usageloop.COUNT}.json"
-					}
-					if (${HTTP_STATUS_CODE} != 200) {
-						print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-						print failing to obtain use for customer ${customer_id} with subscription id ${subscription_id}
-						
-					}
-
-					# Check the total count returned
-					var usagecount = $JSON{usage}.[totalCount]
-
-						if (${usagecount} == 1000) {
-							# Extract the continuation token
-							foreach $JSON{usage}.[links].[next].[headers] as this_header {
-								var hkey = $JSON(this_header).[key]
-								if (${hkey} == MS-ContinuationToken) {
-									# Get the continuation token 
-
-									# Extract all text to end of field
-									#match c_token "continuation_token=(.*)" $JSON(this_header).[value]
-									#if (${c_token.STATUS} == MATCH) {
-										# If matched, refine it to remove any URL parameters following the token
-									#	match c_token "([^&]+).*" "${c_token.RESULT}"
-									#} 
-									#if (${c_token.STATUS} != MATCH) {
-									#	print Could not extract continuation token
-									#	terminate
-									#} 
-									#var continuationToken = ${c_token.RESULT}
-									var continuationToken = $JSON(this_header).[value]
-									# Get the continuation URI for the next call
-									var continuation_uri = $JSON{usage}.[links].[next].[uri]
-									print Continuation URI is: ${continuation_uri}
-									exit_loop
-								}
-							}
-						} 
-					
-					# Render the usage as a CSV file
-					foreach $JSON{usage}.[items] as this_item {
-						csv write_fields "usage" ${customer_id} ${subscription_id}
-						csv write_fields "usage" $JSON(this_item).[usageStartTime] $JSON(this_item).[usageEndTime]
-						csv write_fields "usage" $JSON(this_item).[resource].[id] $JSON(this_item).[resource].[name]
-						csv write_fields "usage" $JSON(this_item).[resource].[category] $JSON(this_item).[resource].[subcategory]
-						csv write_fields "usage" $JSON(this_item).[quantity] $JSON(this_item).[unit]
-						csv write_fields "usage" $JSON(this_item).[instanceData].[resourceUri]
-						csv write_fields "usage" $JSON(this_item).[instanceData].[location]
-						csv write_fields "usage" $JSON(this_item).[instanceData].[partNumber]
-						csv write_fields "usage" $JSON(this_item).[instanceData].[orderNumber]
-						csv write_fields "usage" $JSON(this_item).[attributes].[objectType]
-						csv write_fields "usage" $JSON(this_item).[resource].[region]
-						
-					}
-					
-					if (${usagecount} == 1000) {
-						print ${totalrecords} usage records received, getting up to 1000 more ...
-						var totalrecords += 1000
-					} else {
-						var totalrecords += ${usagecount}
-						print ${totalrecords} usage records received
-						# No more continuation required
-						exit_loop
-					}
-				} # End loop
-			} # End if
-		} # End foreach
-	} # End if reseller_code
-}	
-csv close "usage"
-discard {customers}
-discard {subscriptions}
-discard {usage}
-
  
