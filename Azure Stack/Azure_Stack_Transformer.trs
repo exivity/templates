@@ -6,11 +6,14 @@ option embed = YES
 # This is extracted using Azure Stack extractor (see github)
 #
 import "system\extracted\AzureStack\${dataDate}_stack_usage.csv" source azure alias stack_usage
+import "system\extracted\AzureStack\${dataDate}_stack_subscriptions.csv" source azure alias subscriptions
 
 # import example rates
 import "system\extracted\AzureStack\rates\azure_stack_example_rates.csv" source azure alias stack_rates
 
-# normalise data
+# obtain subscription names and normalise data
+correlate azure.subscriptions.displayName using subscriptionId
+rename column displayName to "Subscription Name"
 rename column subscriptionId to "Subscription ID"
 rename column meterId to "Meter ID"
 # don't need the record ID, name and type
