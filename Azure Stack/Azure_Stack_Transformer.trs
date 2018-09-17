@@ -46,9 +46,6 @@ where ([service_key] =~ /.*[a-zA-Z]*_.*/) {
   set service_name as vms_size_service
 }
 
-# create the services based off the service_key and using quantity
-# create columns from "service_key" using quantity
-
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
 set rate to "0"
@@ -77,4 +74,5 @@ services {
 	interval_col  = interval
 	unit_label_col = unit 
 	consumption_col = quantity
+}
 }
