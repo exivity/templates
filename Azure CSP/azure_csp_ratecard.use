@@ -8,30 +8,36 @@
 
 #==================== Configuration ====================#
 #
-public var client_id = "client id" # Exvity Partner Center Application ID
-public var username = "username"
-public var password = "password"
-public var MyDomain = "csp domain"
 
+# Application ID of the Partner Center Web Application
+public var client_id = "guid-of-your-partner-center-application" 
+# secret that belongs to the client application GUID
+public var secret = "secret-belonging-to-client-id"
+# Your CSP domain, usually xxxx.onmicrosoft.com
+public var MyDomain = "YourDomain.onmicrosoft.com"
+# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var exportdir = "system/extracted/AzureCSP"
+# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var CSV_dir = "system/extracted/AzureCSP_rates"
+# Make sure to set this to your CSP currency
+public var currency = "EUR"
+# Make sure to set this to your CSP region
+public var region = "NL"
+
+# default variables
 var online = yes
-public var CSV_dir = "system\extracted\AzureCSP_rates" # make sure this directory does exist before running this extractor
-public var JSON_dir = "${CSV_dir}\json" # make sure this directory does exist before running this extractor
-
-
-var ratesJSON = "${JSON_dir}\AzureRates.json"
-var ratesCSV = "${CSV_dir}\csp_rates_per_threshold.csv"
-
-public var var currency = "EUR" # make sure to set this to your tenant currency
-public var var region = "NL" # make sure to set this to your tenant region
+var JSON_dir = "${CSV_dir}/json" 
+var ratesJSON = "${JSON_dir}/AzureRates.json"
+var ratesCSV = "${CSV_dir}/csp_rates_per_threshold.csv"
 
 #
 #=================  End Configuration ==================#
 
-
 if (${online} == yes) {	
 	print "Getting AD Token"
 	# Set up the HTTP request parameters
-	set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid"
+	set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https%3A%2F%2Fgraph.windows.net"
+	# ------- Alternative authentication ------ set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid"
 	set http_header "Content-Type: application/x-www-form-urlencoded"
 
 	# Get AD Token and cache it in a buffer called {token}

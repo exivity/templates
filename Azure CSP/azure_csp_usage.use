@@ -3,7 +3,7 @@
 #  This USE script will download the Azure CSP:
 #
 #	- Customers
-#	- Subsctipions
+#	- Subscriptions
 #	- Usage Data    
 #
 #  Please consult https://docs.exivity.com/ for more info.
@@ -23,7 +23,7 @@
 if (${ARGC} != 2)
 {
 	print "This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format"
-	terminate
+	terminate with error
 } else {
 	var today = ${ARG_1}
 	var tomorrow = ${ARG_2}
@@ -33,13 +33,13 @@ if (${ARGC} != 2)
 match date "^([0-9]{8})$" ${today}
 if (${date.STATUS} != MATCH) {
 	print Argument 1 error: ${today} is not in today format
-	terminate
+	terminate with error
 }
 
 match date "^([0-9]{8})$" ${tomorrow}
 if (${date.STATUS} != MATCH) {
 	print Argument 2 error: ${tomorrow} is not in today format
-	terminate
+	terminate with error
 }
 
 #==================== Configuration ====================#
@@ -55,16 +55,21 @@ if (${date.STATUS} != MATCH) {
 #
 loglevel INFO
 
-public var client_id = "guid-of-your-partner-center-application" # Application ID of the Partner Center Web Application
-public var username = "username@yourdomain.onmicrosoft.com" # user name with access to the Patner Center API
-public var password = "YourPassword" # Password for the above user name
-public var MyDomain = "yourdomain.onmicrosoft.com" # Your CSP domain, usually like: xxx.onmicrosoft.com
+# Application ID of the Partner Center Web Application
+public var client_id = "guid-of-your-partner-center-application" 
+# secret that belongs to the client application GUID
+public var secret = "secret-belonging-to-client-id"
+# Your CSP domain, usually xxxx.onmicrosoft.com
+public var MyDomain = "YourDomain.onmicrosoft.com"
+# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var exportdir = "system/extracted/AzureCSP"
 
-var exportdir = "system/extracted/AzureCSP"
+# default variables
 var get_token = yes
 var online_customers = yes
 var online_subscriptions = yes
 
+# default path variables
 var customer_export_file = "${exportdir}/${today}_csp_customers.csv"
 var subscriptions_export_file = "${exportdir}/${today}_csp_subscriptions.csv"
 var usage_export_file = "${exportdir}/${today}_csp_usage.csv"
@@ -79,7 +84,7 @@ var json_filedir = "${exportdir}/json"
 match day "^[0-9]{6}([0-9]{2})" ${today}
 if (${day.STATUS} != MATCH) {
 	print Could not extract day from the supplied date (${today})
-	terminate
+	terminate with error
 } else {
 	var day = ${day.RESULT}
 }
@@ -87,7 +92,7 @@ if (${day.STATUS} != MATCH) {
 match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${today}
 if (${day.STATUS} != MATCH) {
 	print Could not extract month from the supplied date (${today})
-	terminate
+	terminate with error
 } else {
 	var month = ${month.RESULT}
 }
@@ -95,7 +100,7 @@ if (${day.STATUS} != MATCH) {
 match year "^([0-9]{4})[0-9]{4}" ${today}
 if (${year.STATUS} != MATCH) {
 	print Could not extract year from the supplied date (${today})
-	terminate
+	terminate with error
 } else {
 	var year = ${year.RESULT}
 }
@@ -103,7 +108,7 @@ if (${year.STATUS} != MATCH) {
 match day "^[0-9]{6}([0-9]{2})" ${tomorrow}
 if (${day.STATUS} != MATCH) {
 	print Could not extract day from the supplied date (${tomorrow})
-	terminate
+	terminate with error
 } else {
 	var tomorrow_day = ${day.RESULT}
 }
@@ -111,7 +116,7 @@ if (${day.STATUS} != MATCH) {
 match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${tomorrow}
 if (${day.STATUS} != MATCH) {
 	print Could not extract month from the supplied date (${tomorrow})
-	terminate
+	terminate with error
 } else {
 	var tomorrow_month = ${month.RESULT}
 }
@@ -119,7 +124,7 @@ if (${day.STATUS} != MATCH) {
 match year "^([0-9]{4})[0-9]{4}" ${tomorrow}
 if (${year.STATUS} != MATCH) {
 	print Could not extract year from the supplied date (${tomorrow})
-	terminate
+	terminate with error
 } else {
 	var tomorrow_year = ${year.RESULT}
 }
@@ -159,6 +164,7 @@ loop date_range ${date_diff} {
   csv add_headers "usage" quantity unit resourceUri location partNumber orderNumber objectType region
   csv fix_headers "usage"
   
+
   print "This is date_range loop number: ${date_range.COUNT}"
   var next_day += 1
   # Format of a start or end date argument to Azure CSP is: 2016-12-01T00:00:00%2b01:00 
@@ -175,7 +181,10 @@ loop date_range ${date_diff} {
       print "Getting AD Token"
   	
   	# Set up the HTTP request parameters
-  	set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
+  	set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https%3A%2F%2Fgraph.windows.net"
+  	# ====== Possible alternative auth method with user/pass if required ===== #
+  	# set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
+  	# ======================================================================== #
   	set http_header "Content-Type: application/x-www-form-urlencoded"
   	set http_savefile "${json_filedir}/http_savefile.json"
   	# Get AD Token and cache it in a buffer called {token}
@@ -185,7 +194,7 @@ loop date_range ${date_diff} {
   		print The server response was:
   		json format {token} 
   		print {token}
-  		terminate
+  		terminate with error
   	}
   
   	# Create a variable called ${access_token} from the AD token in {token}
@@ -210,7 +219,7 @@ loop date_range ${date_diff} {
   		print The server response was:
   		json format {token} 
   		print {token}
-  		terminate
+  		terminate with error
   	}
   
   	# Create a variable called ${AUtoken} from the App+User token in {token}
@@ -269,8 +278,7 @@ loop date_range ${date_diff} {
     	}
     	
     	var reseller_code = $JSON{subscriptions}.[code]
-    	if ("${reseller_code}" != 20002 ) 
-    	{
+    	if (("${reseller_code}" != 20002) && ("${reseller_code}" != 3000)) {
     		# For each subscription export the required CSV fields
     		foreach $JSON{subscriptions}.[items] as this_subscription {
     			csv write_field "subscriptions" ${c_id}
@@ -290,14 +298,13 @@ loop date_range ${date_diff} {
     			csv write_field "subscriptions" $JSON(this_subscription).[contractType]   
     		}
     	} else {
-    		# 
-    		print Skipping customer ${c_name} with id: ${c_id} - this is not an acccount managed by your reseller
+    		print "Skipping customer ${c_name} with id: ${c_id} - this is not an acccount managed by your reseller, or it is a unknown customer."
     	}
     }	
   
     #========== OBTAINING AZURE USAGE ===============#
     #
-    print Retrieving Azure usage data
+    print "Retrieving Azure usage data"
     
     foreach $JSON{customers}.[items] as this_customer
     {
@@ -307,10 +314,10 @@ loop date_range ${date_diff} {
     	# ... get their subscriptions  
     	buffer subscriptions = FILE "${json_filedir}/${today}_subs_${customer_id}.json"
     	
-    	# this is to check for === does not have a reseller relationship with customer CAID  === errprs
+    	# this is to check for reseller relationship with customer
     	var reseller_code = $JSON{subscriptions}.[code]
-    	print Reseller code is now: $JSON{subscriptions}.[code]
-    	if ("${reseller_code}" != 20002 ) 
+    	print "Reseller code is now: $JSON{subscriptions}.[code]"
+    	if (("${reseller_code}" != 20002) && ("${reseller_code}" != 3000))
     	{
     		# For each subscription that has an offerName of Microsoft Azure
     		foreach $JSON{subscriptions}.[items] as this_subscription {		
@@ -354,26 +361,30 @@ loop date_range ${date_diff} {
     					if (${HTTP_STATUS_CODE} != 200) {
     						print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
     						print failing to obtain use for customer ${customer_id} with subscription id ${subscription_id}
-    						
     					}
     
     					# Check the total count returned
     					var usagecount = $JSON{usage}.[totalCount]
     
-    						if (${usagecount} == 1000) {
-    							# Extract the continuation token
-    							foreach $JSON{usage}.[links].[next].[headers] as this_header {
-    								var hkey = $JSON(this_header).[key]
-    								if (${hkey} == MS-ContinuationToken) {
-    									# Get the continuation token 
-    									var continuationToken = $JSON(this_header).[value]
-    									# Get the continuation URI for the next call
-    									var continuation_uri = $JSON{usage}.[links].[next].[uri]
-    									print Continuation URI is: ${continuation_uri}
-    									exit_loop
-    								}
-    							}
-    						} 
+  						if (${usagecount} == 1000) {
+  							# Extract the continuation token
+  							foreach $JSON{usage}.[links].[next].[headers] as this_header {
+  								var hkey = $JSON(this_header).[key]
+  								if (${hkey} == MS-ContinuationToken) {
+  									# Get the continuation token 
+  									var continuationToken = $JSON(this_header).[value]
+  									# Get the continuation URI for the next call
+  									var continuation_uri = $JSON{usage}.[links].[next].[uri]
+  									print Continuation URI is: ${continuation_uri}
+  									exit_loop
+  								}
+  							}
+  						}
+  						
+  						if (${usagecount} == 0) {
+  						  print "Not consumption found for this customer in the selected time period."
+  						  exit_loop
+  						}
     					
     					# Render the usage as a CSV file
     					foreach $JSON{usage}.[items] as this_item {
@@ -400,13 +411,13 @@ loop date_range ${date_diff} {
     						# No more continuation required
     						exit_loop
     					}
-    				} # End usage loop
-    			} # End if Azure Offer
-    		} # End foreach subscription
+    				} # End loop
+    			} # End if
+    		} # End foreach
     	} # End if reseller_code
-    } # End foreach customer	
+    }	
 
-    #========== NOW GET THE NEXT BATCH OF CUSTOMERS ============#
+    #========== NOW GET THE FOLLOWING BATCH OF CUSTOMERS ============#
     #
     
     # get the link and token from the json
@@ -448,7 +459,6 @@ loop date_range ${date_diff} {
 
   } # end of customer loop
   
-  # close the csv files for this day
   csv close "customers"
   csv close "subscriptions"
   csv close "usage"
