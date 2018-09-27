@@ -20,13 +20,22 @@
 #																
 #################################################################
 
-if (${ARGC} != 2)
-{
+if (${ARGC} != 2) {
 	print "This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format"
 	terminate with error
 } else {
 	var today = ${ARG_1}
 	var tomorrow = ${ARG_2}
+}
+	
+if (${ARG_1} == ${ARG_2}) {
+  print "FROM and TO date cannot be the same"
+  terminate with error
+}
+
+if (${ARG_1} > ${ARG_2}) {
+  print "TO date cannot be a date that lies before FROM date"
+  terminate with error
 }
 
 # Validate the date formats
