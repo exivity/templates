@@ -1,0 +1,69 @@
+option loglevel = DEBUGX
+option embed = YES
+#
+# Import usage from Azure CSP
+#
+import "system\extracted\AzureCSP\csp_usageitems_${dataDate}.csv" source azure alias csp_usage options {
+    exclude customerBillableAccount usageDate partnerId	partnerName	partnerBillableAccountId domainName invoiceLineItemType mpnId tier2MpnId invoiceNumber chargeStartDate chargeEndDate billingProvider subscriptionName subscriptionDescription	billingCycleType orderId
+}
+
+# import rates
+import "system\extracted\AzureCSP\csp_billingitems.csv" source azure alias stack_rates options {
+    exclude detailLineItemId invoiceLineItemType sku mpnId tier2MpnId chargeStartDate chargeEndDate billingProvider
+}
+
+# obtain subscription names and normalise data
+rename column azure.csp_usage.customerId to customer_id
+rename column azure.csp_usage.customerCompanyName to customer_name
+rename column azure.csp_usage.resourceName to resource_name
+rename column azure.csp_usage.serviceName to resource_category
+rename column azure.csp_usage.serviceType to resource_subcategory
+rename column azure.csp_usage.consumedQuantity to quantity
+rename column azure.csp_usage.resourceGuid to resource_id
+rename column azure.csp_usage.subscriptionId to subscription_id
+rename column azure.stack_rates.pretaxEffectiveRate to rate
+
+capitalize values in columns customer_id resource_name resource_category resource_subcategory unit region customer_name
+
+# merge columns in order to correlate rates and usage, first we need to make sure both columns have the same format
+capitalize values in columns azure.csp_usage.resource_id azure.stack_rates.resourceGuid azure.csp_usage.subscription_id azure.stack_rates.subscriptionId
+create mergedcolumn resource_id2 separator " " from azure.csp_usage.resource_id azure.csp_usage.subscription_id
+default dset azure.stack_rates
+create mergedcolumn resource_id2 separator " " from azure.stack_rates.resourceGuid azure.stack_rates.subscriptionId
+default dset azure.csp_usage
+
+# correlate data within datasets
+correlate azure.stack_rates.rate using resource_id2
+
+create mergedcolumn service_name separator " " from "resource_name" "resource_category" "resource_subcategory" "region"
+create mergedcolumn service_key separator " | " from "resource_id" "resource_name" "resource_category"
+
+# Set dummy values for columns that don't have a value set
+option overwrite = NO
+set rate to "0"
+#set cogs to "0"
+set unit to "Unit/Hours"
+create column interval value "individually"
+set resource_category to "Azure Stack Generic Resources"
+
+# cleanup
+delete columns resource_id2
+
+# export data for troubleshooting
+export azure.csp_usage as "${dataDate}_CSP.csv"
+finish
+#option services = overwrite
+services {
+ effective_date = 20180801
+	service_type = automatic
+	description_col = service_name
+	category_col = resource_category
+	instance_col = resource_id
+	usages_col = service_key
+	set_rate_using = rate
+	#set_cogs_using = cogs
+	interval_col  = interval
+	unit_label_col = unit 
+	consumption_col = quantity
+}
+

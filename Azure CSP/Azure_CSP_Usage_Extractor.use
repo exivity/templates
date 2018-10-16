@@ -12,7 +12,7 @@
 #                                                               
 # This needs two parameters, FROM and TO date in: YYYYMMDD
 #
-# NOTE: FROM and TO date should not overlap more then 1 month.
+# NOTE: FROM and TO date should not overlap more than 1 month.
 #		In case it does overlap 1 month, it will reset the FROM
 #		date to the last day of the FROM month. And the TO date
 #		to the first day of the TO month. Support for overlapping
@@ -62,7 +62,7 @@ if (${date.STATUS} != MATCH) {
 # If either of those options are set to 'yes' then get_token must
 # also be set to yes
 #
-loglevel INFO
+loglevel DEBUGX
 
 # Application ID of the Partner Center Web Application
 public var client_id = "guid-of-your-partner-center-application" 
@@ -149,13 +149,54 @@ var next_day = ${day}
 if (${month} != ${tomorrow_month}) {
   print "WARNING! spanning two months not available for > 1 day."
   print "Resetting day variable to last day of the FROM month ..."
-  get_last_day_of ${year}${month} as day
+  get_last_day_of ${year}${month} as lastday
   print "Resetting tomorrow_day variable to first day of the to month ..."
-  var tomorrow_day = 01
-  var date_diff = 1
+  print "the last day of this month is: ${lastday}"
+  #var tomorrow_day = 01
+  
+  var date_diff = ${lastday}
+  if (${lastday} == ${day}) { 
+     var next_day = 00
+  }
+  else {
+    var next_day = ${day}
+  }
+  var date_diff -= ${day}
+  var date_diff += ${tomorrow_day}
+  var tomorrow_month = ${month}
+  var month_flag = "yes"
+  
+} else {
+  var lastday = ${day}
+  var month_flag = "no"
 }
 
+
+
 loop date_range ${date_diff} {
+  
+  if ((${day} == ${lastday}) && (${month_flag} == "yes")){
+  var next_day = 00
+  var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
+  var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
+  var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
+  var tomorrow_month += 1
+  } if ((${day} > ${lastday}) && (${month_flag} == "yes")) {
+  var next_day = 01
+  var day = 01
+  var month2 = ${tomorrow_month}
+  var month = ${tomorrow_month}
+  var customer_export_file = "${exportdir}/${year}${month2}${day}_csp_customers.csv"
+  var subscriptions_export_file = "${exportdir}/${year}${month2}${day}_csp_subscriptions.csv"
+  var usage_export_file = "${exportdir}/${year}${month2}${day}_csp_usage.csv"
+  
+  } else {
+  var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
+  var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
+  var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
+  }
+
+
   print "Set customers export csv to ${customer_export_file} ..."
   csv "customers" = "${customer_export_file}"
   csv add_headers "customers" ID tenantId Name Domain Type Relationship
@@ -176,13 +217,18 @@ loop date_range ${date_diff} {
 
   print "This is date_range loop number: ${date_range.COUNT}"
   var next_day += 1
+  print The day diff is: ${date_diff} the day is ${day} and next_Day is ${next_day}
   # Format of a start or end date argument to Azure CSP is: 2016-12-01T00:00:00%2b01:00 
-  var start_time = ${year}-${month}-${day}T00:00:00-00:00
-  var end_time = ${tomorrow_year}-${tomorrow_month}-${next_day}T00:00:00-00:00
+  var start_time = ${year}-${month}-${day}T00:00:00
+  var end_time = ${tomorrow_year}-${tomorrow_month}-${next_day}T00:00:00
   
-  var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
-  var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
-  var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
+  print This is the start_time: ${start_time} and this is the end_time: ${end_time}
+  
+#  var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
+#  var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
+#  var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
+  
+  print I have created the filee ${usage_export_file}
 
   if (${get_token} == yes)
   {
@@ -471,6 +517,7 @@ loop date_range ${date_diff} {
   csv close "customers"
   csv close "subscriptions"
   csv close "usage"
+  print Closing files
 
   # When running in a loop, we can skip getting a new token,
   # obtaining customers, and subscriptions

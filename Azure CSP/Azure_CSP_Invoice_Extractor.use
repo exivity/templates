@@ -1,0 +1,428 @@
+#################################################################
+# 
+#  This USE script will download the Azure CSP:
+#
+#	- Billing Data
+#	- Usage Data    
+#
+#  Please consult https://docs.exivity.com/ for more info.
+#
+# ==========================================================
+#                                                               
+# This requires 2 arguments, the positive offset of the report, being 0 the current month, 1 the previous month... and the year in 4 digits format
+#
+#################################################################
+
+if (${ARGC} != 2) {
+	print "This requires 2 arguments, the positive offset of the report, being 0 the current month, 1 the previous month... and the year in 4 digits format"
+	terminate with error
+} else {
+	var offset = ${ARG_1}
+	var actualyear = ${ARG_2}
+}
+
+match error_check "^([0-9]+)$" ${offset}
+if (${error_check.STATUS} != MATCH) {
+	print The Argument is not a number
+	terminate with error
+}
+
+match error_check "([0-9]{4})" ${actualyear}
+if (${error_check.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${actualyear})
+	terminate with error
+}
+
+#==================== Configuration ====================#
+#
+
+# For testing and maintenance purposes
+# If any online_customers or online_subscriptions are set to no then the data is
+# retrieved from local JSON files on disk. These files are created when run with
+# the options set to yes
+#
+# If either of those options are set to 'yes' then get_token must
+# also be set to yes
+#
+loglevel INFO
+
+#Calculating the month of the report
+
+if (${DAY} >= 17) {
+  var actualmonth = ${MONTH}
+}
+else {
+  var actualmonth = ${MONTH}
+  var actualmonth -= 1
+}
+#if ((${offset} == 1) && (${DAY} >= 17)) {
+#  var actualmonth = ${MONTH}
+#}
+#if ((${offset} == 1) && (${DAY} < 17)) {
+#  var actualmonth = ${MONTH}
+#  var actualmonth -= 1
+#}
+#if ((${offset} != 0) && (${offset} != 1)) {
+#  var actualmonth = ${MONTH}
+#}
+
+if (${offset} >= 12) {
+  var offset2 = ${offset}
+  var offset2 -= 12
+  var actualmonth -= ${offset2}
+}
+else {
+  var actualmonth -= ${offset}
+}
+
+
+print Calculating report for month ${actualmonth} and year ${actualyear}
+
+#Calculating number of days in the MS Billing month
+if (${actualmonth} == 01) {
+  var loopcount = 31
+}
+if (${actualmonth} == 02) {
+  var loopcount = 31
+}
+if (${actualmonth} == 03) {
+  var loopcount = 28
+}
+if (${actualmonth} == 04) {
+  var loopcount = 31
+}
+if (${actualmonth} == 05) {
+  var loopcount = 30
+}
+if (${actualmonth} == 06) {
+  var loopcount = 31
+}
+if (${actualmonth} == 07) {
+  var loopcount = 30
+}
+if (${actualmonth} == 08) {
+  var loopcount = 31
+}
+if (${actualmonth} == 09) {
+  var loopcount = 31
+}
+if (${actualmonth} == 10) {
+  var loopcount = 31
+}
+if (${actualmonth} == 11) {
+  var loopcount = 30
+}
+if (${actualmonth} == 12) {
+  var loopcount = 31
+}
+
+# Application ID of the Partner Center Web Application
+public var client_id = "guid-of-your-partner-center-application" 
+# secret that belongs to the client application GUID
+public var secret = "secret-belonging-to-client-id"
+# Your CSP domain, usually xxxx.onmicrosoft.com
+public var MyDomain = "YourDomain.onmicrosoft.com"
+# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var exportdir = "system/extracted/AzureCSP"
+
+# default variables
+var get_token = yes
+
+# default path variables
+var billing_export_file = "${exportdir}/csp_billingitems${actualmonth}${actualyear}.csv"
+var json_filedir = "${exportdir}/json"
+
+#
+#=================  End Configuration ==================#
+
+  csv "billing" = "${billing_export_file}"
+  csv add_headers "billing" detailLineItemId sku includedQuantity overageQuantity listPrice currency pretaxCharges taxAmount postTaxTotal pretaxEffectiveRate postTaxEffectiveRate chargeType invoiceLineItemType partnerId partnerName partnerBillableAccountId customerId domainName customerCompanyName mpnId tier2MpnId invoiceNumber subscriptionId subscriptionName subscriptionDescription billingCycleType orderId serviceName serviceType resourceGuid resourceName region consumedQuantity chargeStartDate chargeEndDate unit billingProvider
+  csv fix_headers "billing"
+
+  if (${get_token} == yes)
+  {
+  	# Get an AD token from login.windows.net
+      print "Getting AD Token"
+  	
+  	# Set up the HTTP request parameters
+  	set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https%3A%2F%2Fgraph.windows.net"
+  	# ====== Possible alternative auth method with user/pass if required ===== #
+  	# set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
+  	# ======================================================================== #
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_savefile "${json_filedir}/http_savefile.json"
+  	# Get AD Token and cache it in a buffer called {token}
+  	buffer token = http POST "https://login.windows.net/${MyDomain}/oauth2/token"
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print The server response was:
+  		json format {token} 
+  		print {token}
+  		terminate with error
+  	}
+  
+  	# Create a variable called ${access_token} from the AD token in {token}
+  	var access_token = $JSON{token}.[access_token]
+  	discard {token}
+  
+  	# Use the access_token to get an App_User token
+    print "Getting AU Token"
+  	# Reset headers as we want to create a new Authorization: header
+  	clear http_headers
+  	
+  	# Set up the HTTP request parameters
+  	var partnerRoot = "https://api.partnercenter.microsoft.com"
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_header "Authorization: Bearer ${access_token}"	
+  	set http_body data "grant_type=jwt_token"
+  
+  	# Get the new token into a buffer called {token}
+  	buffer token = http POST ${partnerRoot}/generatetoken
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print The server response was:
+  		json format {token} 
+  		print {token}
+  		terminate with error
+  	}
+  
+  	# Create a variable called ${AUtoken} from the App+User token in {token}
+  	# 2017-07 - App+User is not needed. Setting AUToken to access_token
+  	var AUtoken = ${access_token}
+  	discard {token}
+  	print ${AUtoken}
+  }
+  
+  #======== OBTAINING INVOICE COLLECTION ==========#
+  #
+  
+  # Use the AUtoken to get a list of invoices
+  print "Getting Billing invoice list"
+  clear http_headers
+  set http_header "Accept: application/json"
+  set http_header "Authorization: Bearer ${AUtoken}"	
+  buffer invoices = http GET "${partnerRoot}/v1/invoices?size=1&offset=${offset}"
+  if (${HTTP_STATUS_CODE} != 200) {
+  	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  	print Exiting
+  	terminate with error
+  }
+  
+    foreach $JSON{invoices}.[items] as this_invoice
+    {
+    	# Define the fields to export to match the headers
+    	    foreach $JSON(this_invoice).[invoiceDetails] as this_item
+          {
+    	       var provider = $JSON(this_item).[billingProvider]
+    	       var LineItemType = $JSON(this_item).[invoiceLineItemType]
+    	       var address = $JSON(this_item).[links].[self].[uri]
+    	       print ${address}
+    	       if ((${provider} == "azure") && (${LineItemType} == "billing_line_items")) {
+    	           loop invoices1 {
+    	           print "Getting Billing invoice for month ${actualmonth}..."
+                 clear http_headers
+                 set http_savefile "${json_filedir}/invoiceNumber${this_item.COUNT}.json"
+                 set http_header "Accept: application/json"
+                 set http_header "Authorization: Bearer ${AUtoken}"	
+                 buffer lineItems = http GET "${partnerRoot}/v1/${address}"
+                 if (${HTTP_STATUS_CODE} != 200) {
+  	               print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  	               print Exiting
+  	               terminate with error
+                 }
+                 
+                 if (${LineItemType} == "billing_line_items") {
+                   foreach $JSON{lineItems}.[items] as this_lineItem
+                    {
+
+                       csv write_field billing $JSON(this_lineItem).[detailLineItemId]
+                       csv write_field billing $JSON(this_lineItem).[sku]
+                       csv write_field billing $JSON(this_lineItem).[includedQuantity]
+                       csv write_field billing $JSON(this_lineItem).[overageQuantity]
+                       csv write_field billing $JSON(this_lineItem).[listPrice]
+                       csv write_field billing $JSON(this_lineItem).[currency]
+                       csv write_field billing $JSON(this_lineItem).[pretaxCharges]
+                       csv write_field billing $JSON(this_lineItem).[taxAmount]
+                       csv write_field billing $JSON(this_lineItem).[postTaxTotal]
+                       csv write_field billing $JSON(this_lineItem).[pretaxEffectiveRate]
+                       csv write_field billing $JSON(this_lineItem).[postTaxEffectiveRate]
+                       csv write_field billing $JSON(this_lineItem).[chargeType]
+                       csv write_field billing $JSON(this_lineItem).[invoiceLineItemType]
+                       csv write_field billing $JSON(this_lineItem).[partnerId]
+                       csv write_field billing $JSON(this_lineItem).[partnerName]
+                       csv write_field billing $JSON(this_lineItem).[partnerBillableAccountId]
+                       csv write_field billing $JSON(this_lineItem).[customerId]
+                       csv write_field billing $JSON(this_lineItem).[domainName]
+                       csv write_field billing $JSON(this_lineItem).[customerCompanyName]
+                       csv write_field billing $JSON(this_lineItem).[mpnId]
+                       csv write_field billing $JSON(this_lineItem).[tier2MpnId]
+                       csv write_field billing $JSON(this_lineItem).[invoiceNumber]
+                       csv write_field billing $JSON(this_lineItem).[subscriptionId]
+                       csv write_field billing $JSON(this_lineItem).[subscriptionName]
+                       csv write_field billing $JSON(this_lineItem).[subscriptionDescription]
+                       csv write_field billing $JSON(this_lineItem).[billingCycleType]
+                       csv write_field billing $JSON(this_lineItem).[orderId]
+                       csv write_field billing $JSON(this_lineItem).[serviceName]
+                       csv write_field billing $JSON(this_lineItem).[serviceType]
+                       csv write_field billing $JSON(this_lineItem).[resourceGuid]
+                       csv write_field billing $JSON(this_lineItem).[resourceName]
+                       csv write_field billing $JSON(this_lineItem).[region]
+                       csv write_field billing $JSON(this_lineItem).[consumedQuantity]
+                       csv write_field billing $JSON(this_lineItem).[chargeStartDate]
+                       csv write_field billing $JSON(this_lineItem).[chargeEndDate]
+                       csv write_field billing $JSON(this_lineItem).[unit]
+                       csv write_field billing $JSON(this_lineItem).[billingProvider]
+                    }
+                 }
+                 var address = $JSON{lineItems}.[links].[next].[uri]
+                 print ${address}
+               if (${address} != "EXIVITY_NOT_FOUND") {
+                 var address = $JSON{lineItems}.[links].[next].[uri]
+                 print The new address is ${address}
+               } else {
+
+                print End of the Billing invoice
+                exit_loop
+
+               }
+  #               discard {invoices}
+               }  
+
+    	       }
+    	      
+    	    }
+    }
+  csv close "billing"
+  discard {invoices}
+  
+#--------------------------------------------------------------------------------------  
+  # Initial variables
+  var actualday = 17
+  var actualmonth2 = ${actualmonth}
+  var actualmonth2 -= 1
+  var getfromjson = "no"
+  
+  loop dayofthemonth ${loopcount} {
+  # Definition of path variables
+  var usage_export_file = "${exportdir}/csp_usageitems_${actualyear}${actualmonth2}${actualday}.csv"
+  csv "usage" = "${usage_export_file}"
+  csv add_headers "usage" customerBillableAccount usageDate invoiceLineItemType partnerId partnerName partnerBillableAccountId customerId domainName customerCompanyName mpnId tier2MpnId invoiceNumber subscriptionId subscriptionName subscriptionDescription billingCycleType orderId serviceName serviceType resourceGuid resourceName region consumedQuantity chargeStartDate chargeEndDate unit billingProvider
+  csv fix_headers "usage"
+
+      # Use the AUtoken to get a list of invoices
+  print "Getting usage invoice list"
+  clear http_headers
+  set http_header "Accept: application/json"
+  set http_header "Authorization: Bearer ${AUtoken}"	
+  buffer invoices = http GET "${partnerRoot}/v1/invoices?size=1&offset=${offset}"
+  if (${HTTP_STATUS_CODE} != 200) {
+  	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  	print Exiting
+  	terminate with error
+  }
+  
+    foreach $JSON{invoices}.[items] as this_invoice
+    {
+    	# Define the fields to export to match the headers
+    	
+    	    foreach $JSON(this_invoice).[invoiceDetails] as this_item
+          {
+             
+             var linkscounter = 1
+    	       var provider = $JSON(this_item).[billingProvider]
+    	       var LineItemType = $JSON(this_item).[invoiceLineItemType]
+    	       var address = $JSON(this_item).[links].[self].[uri]
+    	       print ${address}
+    	       if ((${provider} == "azure") && (${LineItemType} == "usage_line_items")) {
+    	           loop invoices1 {
+    	           if (${getfromjson} == "no") {
+    	           print "Getting usage invoice for day ${actualday}${actualmonth}..."
+                 clear http_headers
+                 set http_savefile "${json_filedir}/usage${linkscounter}.json"
+                 set http_header "Accept: application/json"
+                 set http_header "Authorization: Bearer ${AUtoken}"	
+                 buffer lineItems = http GET "${partnerRoot}/v1/${address}"
+                 if (${HTTP_STATUS_CODE} != 200) {
+  	               print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  	               print Exiting
+  	               terminate with error
+                 }
+                 }
+                 else {
+                    print "Getting usage invoice fromjson..."
+                 buffer lineItems = file "${json_filedir}/usage${linkscounter}.json"
+                 }
+                 if (${LineItemType} == "usage_line_items") {
+                    foreach $JSON{lineItems}.[items] as this_lineItem
+                    {
+                       var jsonday = $JSON(this_lineItem).[usageDate]
+                       if (${jsonday} == "${actualyear}-${actualmonth2}-${actualday}T00:00:00") {
+                       csv write_field usage $JSON(this_lineItem).[customerBillableAccount]
+                       csv write_field usage $JSON(this_lineItem).[usageDate]
+                       csv write_field usage $JSON(this_lineItem).[invoiceLineItemType]
+                       csv write_field usage $JSON(this_lineItem).[partnerId]
+                       csv write_field usage $JSON(this_lineItem).[partnerName]
+                       csv write_field usage $JSON(this_lineItem).[partnerBillableAccountId]
+                       csv write_field usage $JSON(this_lineItem).[customerId]
+                       csv write_field usage $JSON(this_lineItem).[domainName]
+                       csv write_field usage $JSON(this_lineItem).[customerCompanyName]
+                       csv write_field usage $JSON(this_lineItem).[mpnId]
+                       csv write_field usage $JSON(this_lineItem).[tier2MpnId]
+                       csv write_field usage $JSON(this_lineItem).[invoiceNumber]
+                       csv write_field usage $JSON(this_lineItem).[subscriptionId]
+                       csv write_field usage $JSON(this_lineItem).[subscriptionName]
+                       csv write_field usage $JSON(this_lineItem).[subscriptionDescription]
+                       csv write_field usage $JSON(this_lineItem).[billingCycleType]
+                       csv write_field usage $JSON(this_lineItem).[orderId]
+                       csv write_field usage $JSON(this_lineItem).[serviceName]
+                       csv write_field usage $JSON(this_lineItem).[serviceType]
+                       csv write_field usage $JSON(this_lineItem).[resourceGuid]
+                       csv write_field usage $JSON(this_lineItem).[resourceName]
+                       csv write_field usage $JSON(this_lineItem).[region]
+                       csv write_field usage $JSON(this_lineItem).[consumedQuantity]
+                       csv write_field usage $JSON(this_lineItem).[chargeStartDate]
+                       csv write_field usage $JSON(this_lineItem).[chargeEndDate]
+                       csv write_field usage $JSON(this_lineItem).[unit]
+                       csv write_field usage $JSON(this_lineItem).[billingProvider]
+                   
+                      }
+                    }
+                 }
+                 var address = $JSON{lineItems}.[links].[next].[uri]
+                 print ${address}
+               if (${address} != "EXIVITY_NOT_FOUND") {
+                 var address = $JSON{lineItems}.[links].[next].[uri]
+                 print The new address is ${address}
+                 var linkscounter += 1
+                 
+               } else {
+
+                print End of the invoice
+                var getfromjson = "yes"
+                exit_loop
+
+               }
+  #              discard {invoices}
+               } 
+
+    	       }
+    	      
+    	    }
+    }
+  csv close "usage"
+  discard {invoices}
+  
+  if (${dayofthemonth.COUNT} >= ${loopcount}) {
+    print The usage report of the month is finished.
+    exit_loop
+  }
+  else {
+    var actualday += 01
+    if (${actualday} > ${loopcount} ) {
+      var actualday = 01
+      var actualmonth2 += 01
+    }
+    
+  }
+  
+}
