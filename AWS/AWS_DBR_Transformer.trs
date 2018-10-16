@@ -1,6 +1,6 @@
 #####################################################################
 #
-# Example Transformer for AWS Consumption
+# Example Transformer for AWS Detailed Billing Report line items
 #
 # Ensure to provide the correct LinkedAccountId with the import
 #

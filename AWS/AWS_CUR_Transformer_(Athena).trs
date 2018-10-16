@@ -1,0 +1,72 @@
+#####################################################################
+#
+# Example Transformer for AWS CUR using the Athena Extraction end point
+#
+#####################################################################
+
+# option loglevel = DEBUGX # Comment in the final version
+# import customer names from csv
+import "extracted/AWS_CUR/${year}${month}${next_day}_CUR" source aws alias cur
+
+# Normalise the columns names
+rename column ${/.*bill_PayerAccountId/} to PayerAccountId
+rename column ${/.*lineItem_UsageAccountId/} to UsageAccountId
+rename column ${/.*lineItem_LineItemType/} to LineItemType
+rename column ${/.*lineItem_UsageStartDate/} to UsageStartDate
+rename column ${/.*lineItem_UsageEndDate/} to UsageEndDate
+rename column ${/.*lineItem_UsageType/} to UsageType
+rename column ${/.*lineItem_Operation/} to Operation
+rename column ${/.*lineItem_AvailabilityZone/} to AvailabilityZone
+rename column ${/.*lineItem_ResourceId/} to ResourceId
+rename column ${/.*lineItem_UsageAmount/} to UsageQuantity
+rename column ${/.*lineItem_NormalizedUsageAmount/} to NormalizedUsageAmount
+rename column ${/.*lineItem_CurrencyCode/} to CurrencyCode
+rename column ${/.*lineItem_BlendedRate/} to BlendedRate
+rename column ${/.*lineItem_BlendedCost/} to BlendedCost
+rename column ${/.*lineItem_LineItemDescription/} to LineItemDescription
+rename column ${/.*product_ProductName/} to ProductName
+rename column ${/.*product_operatingSystem/} to box_type
+rename column ${/.*product_usagetype/} to usagetype2
+rename column ${/.*pricing_term/} to ReservedInstance
+rename column ${/.*pricing_unit/} to unit
+
+# Identify between Reserved and On demand instances (blanks = Reserved)
+where ([ReservedInstance] == "") {
+  set ReservedInstance to "Reserved"
+ }
+
+# set standard values
+option overwrite = no
+set ResourceId to "Generic Consumption Record"
+create column interval value individually
+
+# set generic unit value to blank cells
+where ([unit] == "") {
+  set unit to "Units"
+}
+
+create mergedcolumn service_key separator " | " from ReservedInstance UsageType box_type Operation AvailabilityZone ProductName
+create mergedcolumn service_name separator " " from ProductName ReservedInstance UsageType box_type Operation AvailabilityZone
+
+# Remove records without costs 
+# This can be removed, when you're interested in consumption rather then costs
+where ( [BlendedRate] == 0 ) {
+  delete rows
+}
+
+finish
+
+services {
+  effective_date = 20170101
+  key = service_key
+  service_type = automatic
+  description_col = service_key # column name
+  category_col = ProductName # column with category value
+  instance_col = ResourceId # the unique instance i.e. vm-id, username, etc
+  usages_col = service_name # the column containing the name of the consumed service usagetype2
+  rate_col = BlendedRate # the column containing the rate values
+  # cogs_col = BlendedRate # the column containing the CoG rate values
+  interval_col  = interval # the column containing the interval (i.e. individually)
+  unit_label_col = unit # the column containing the unit label
+  consumption_col = UsageQuantity # the column containing the consumed quantity
+}
