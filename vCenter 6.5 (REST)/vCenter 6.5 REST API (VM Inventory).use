@@ -1,34 +1,10 @@
-
 #==================== Configuration ====================#
 #
-
-<<<<<<< Updated upstream
-# For testing and maintenance purposes
-# If any online_customers or online_subscriptions are set to no then the data is
-# retrieved from local JSON files on disk. These files are created when run with
-# the options set to yes
-#
-# If either of those options are set to 'yes' then get_token must
-# also be set to yes..
+# This is a vCenter REST API Extractor. It obtains basic 
+# VM information: 
+# - vm name,ram MiB, cpu count and power state
 #
 
-var vcenter = "192.168.1.125"
-loglevel 0
-var online = yes
-var JSON_dir = "c:\exivity\VC65\json"
-var CSV_dir = "c:\exivity\VC65"
-
-var vmsJSON = "${JSON_dir}\vcenter_vms.json"
-var vmJSON = "${JSON_dir}\vcenter_vm.json"
-
-var exportdir = VC65
-var vm_details_export_file = "${exportdir}\DATE_vcenter_vm_details.csv"
-#
-#=================  End Configuration ==================#
-
-***REMOVED***
-encrypted var username = 7bA4wKIW8r/rzcQ7xMuOcvsbUvc3rqTDb8gUcT39OuBpE3I5E+deDw==
-=======
 loglevel INFO # adjust log detail to: DEBUG, INFO, WARN 
 
 # Change this value to your local vcenter hostname or IP address
@@ -47,8 +23,6 @@ var vm_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter
 #
 #=================  End Configuration ==================#
 
-
->>>>>>> Stashed changes
 
 #/ Get an token from vCenter 
 print "Getting VC 6.5 API Token"
