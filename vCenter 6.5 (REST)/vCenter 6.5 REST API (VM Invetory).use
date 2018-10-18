@@ -1,0 +1,106 @@
+
+#==================== Configuration ====================#
+#
+
+<<<<<<< Updated upstream
+# For testing and maintenance purposes
+# If any online_customers or online_subscriptions are set to no then the data is
+# retrieved from local JSON files on disk. These files are created when run with
+# the options set to yes
+#
+# If either of those options are set to 'yes' then get_token must
+# also be set to yes..
+#
+
+var vcenter = "192.168.1.125"
+loglevel 0
+var online = yes
+var JSON_dir = "c:\exivity\VC65\json"
+var CSV_dir = "c:\exivity\VC65"
+
+var vmsJSON = "${JSON_dir}\vcenter_vms.json"
+var vmJSON = "${JSON_dir}\vcenter_vm.json"
+
+var exportdir = VC65
+var vm_details_export_file = "${exportdir}\DATE_vcenter_vm_details.csv"
+#
+#=================  End Configuration ==================#
+
+***REMOVED***
+encrypted var username = 7bA4wKIW8r/rzcQ7xMuOcvsbUvc3rqTDb8gUcT39OuBpE3I5E+deDw==
+=======
+loglevel INFO # adjust log detail to: DEBUG, INFO, WARN 
+
+# Change this value to your local vcenter hostname or IP address
+public var vcenter = "hostname.vcenter.local"
+# Username and password that is allowed to call the vCenter REST API
+public var username = "service-account@your.domain.local"
+# Username and password that is allowed to call the vCenter REST API
+public var password = "Pasword123"
+
+var JSON_dir = "system/extracted/VC65/json" # directory should exist
+var CSV_dir = "system/extracted/VC65" # directory should exist
+var vmsJSON = "${JSON_dir}/vcenter_vms.json"
+var vmJSON = "${JSON_dir}/vcenter_vm.json"
+var vm_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_vm_inventory.csv" 
+
+#
+#=================  End Configuration ==================#
+
+
+>>>>>>> Stashed changes
+
+#/ Get an token from vCenter 
+print "Getting VC 6.5 API Token"
+
+# Set up the HTTP request parameters
+set http_username ${username}
+set http_password ${password}
+set http_authtype basic
+set http_savefile "${JSON_dir}/http_savefile.json"
+# Get VC Token and cache it in a buffer called {token}
+buffer token = http POST "https://${vcenter}/rest/com/vmware/cis/session"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+# clear http_headers
+
+# save the access token
+var access_token = $JSON{token}.[value]
+print ${access_token}
+discard {token}
+
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${vmsJSON}
+print Getting All VM's JSON as ${vmsJSON}
+buffer vms = http GET "https://${vcenter}/rest/vcenter/vm"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+	print The server response was:
+	json format {vms} 
+	print {vms}
+	print Exiting
+	terminate
+}
+
+csv "vm_details" = ${vm_details_export_file}
+csv add_headers "vm_details" vmid name memory_size_MiB cpu_count power_state 
+csv fix_headers "vm_details"
+
+foreach $JSON{vms}.[value] as this_vm {
+	csv write_field vm_details $JSON(this_vm).[vm]
+	csv write_field vm_details $JSON(this_vm).[name]
+	csv write_field vm_details $JSON(this_vm).[memory_size_MiB]
+	csv write_field vm_details $JSON(this_vm).[cpu_count]
+	csv write_field vm_details $JSON(this_vm).[power_state]
+
+}
+
+print JSON retrieved  
+
+clear http_headers
