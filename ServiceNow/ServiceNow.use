@@ -1,0 +1,84 @@
+#################################################################
+#
+# Example Extractor to obtain customer information from your
+# Service Now instance. This is an example, and it requires
+# changes to obtain the information that is relevant to you.
+# For more information about what fields to obtain, please
+# consult the following SNOW documentation link:
+#
+# - https://developer.servicenow.com/app.do#!/rest_api_doc?v=kingston&id=c_TableAPI
+#
+# ==============================================================
+#                                                           
+# This USE script will require one parameter:
+#
+# - [Date] 
+#
+# Both in YYYYMMDD format 
+#                                                           
+#################################################################
+#
+loglevel DEBUGX
+
+if (${ARGC} < 1)
+{
+	print "This requires 1 argument, the day to collect usage for"
+	terminate with error
+} else {
+	var date = ${ARG_1}
+}
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${date}
+if (${date.STATUS} != MATCH) {
+	print Argument 1 error: ${date} is not in YYYYMMDD format
+	terminate with error
+}
+
+#==================== Configuration ====================#
+#
+
+# Provide a user that can read from the SNOW API
+public var username = "<user-with-api-access>"
+# Password associated with above username. Can be encrypted.
+public var password = "<password-for-api-user>"
+# The service-now base URL that services your data
+public var base_url = "https://yourcompany.service-now.com"
+# The Table name to obtain data from
+public var SNOW_table = "core_company"
+# The parameters to use for the REST API call. Consult the ServiceNow API docs in case you want to change these.
+public var SNOW_query = "?sysparm_query=customer%3Dtrue&sysparm_fields=u_customernumber%2Cname%2Cu_custshortname"
+
+#var JSON_dir = "system/extracted/SNOW/json"
+var CSV_out = "system/extracted/SNOW/${date}.csv"
+
+# Set up the HTTP request parameters
+set http_username ${username}
+set http_password ${password}
+set http_authtype basic
+set http_header "Accept: application/json"
+set http_savefile "basicinfo.json"
+buffer snow_data = http GET "${base_url}/api/now/table/${SNOW_table}${SNOW_query}"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    terminate
+}
+
+# prepare the csv file
+csv SNOWcsv = ${CSV_out}
+csv add_headers SNOWcsv CustomerID Name ShortName 
+csv fix_headers SNOWcsv 
+
+#printing json to check I get it
+json format {snow_data}
+print "Received JSON"
+foreach $JSON{snow_data}.[result] as this_SNOW
+{
+  csv write_field SNOWcsv $JSON(this_SNOW).[u_customernumber]
+  csv write_field SNOWcsv $JSON(this_SNOW).[name]
+  csv write_field SNOWcsv $JSON(this_SNOW).[u_custshortname]
+}
+
+print ServiceNow Customers extracted for ${date}..
+
+clear http_headers
