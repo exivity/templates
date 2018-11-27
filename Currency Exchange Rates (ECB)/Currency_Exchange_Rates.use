@@ -1,0 +1,44 @@
+#===================== Introduction ======================#
+#
+#  This is a template Extractor for obtaining currency 
+#  exchange rates. It provides all common currencies to 
+#  EUR, which can be used for currency normalisation tasks 
+#  in the Exivity Transformer ETL engine.
+#
+#  No parameters are required to execute. 
+#
+#  For more information, consult the ECB API docs:
+#  - https://sdw-wsrest.ecb.europa.eu
+#
+#===================== Introduction ======================#
+
+#=================  Start Configuration ==================#
+#
+
+# The hostname of the ECB API end point
+public var API_host = "sdw-wsrest.ecb.europa.eu"
+# Pick D (for Daily) or M (for Monthly) to get Daily or Monthly aggregates
+public var measure_frequency = "D" 
+# The first day for which you want to obtain exchange rates in yyyy-mm-dd format in case of Daily frequency. Use yyyy-mm in case of Monthly. 
+public var start_period = "2017-01-01"
+# The folder to place the extracted files, relative to the Exivity home folder
+public var CSV_File = "system/extracted/ecb/exchange_rates.csv"
+
+#
+#=================  End Configuration ==================#
+
+#/ Connect to the ECB API
+print "Getting ECB Exchange Rates..."
+
+# Set up the HTTP request parameters
+set http_header "Accept: text/csv"
+set http_savefile "${CSV_File}"
+buffer ecb_rates = http get "https://${API_host}/service/data/EXR/${measure_frequency}...SP00.A?startPeriod=${start_period}"
+
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	print {ecb_rates}
+	terminate with error
+}
+print "Succesfully obtained exchange rates."
