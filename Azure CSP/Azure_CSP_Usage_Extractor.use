@@ -281,6 +281,7 @@ loop date_range ${date_diff} {
   	# 2017-07 - App+User is not needed. Setting AUToken to access_token
   	var AUtoken = ${access_token}
   	discard {token}
+	var get_token = no
   }
   
   #======== OBTAINING CUSTOMER ==========#
@@ -359,6 +360,61 @@ loop date_range ${date_diff} {
   
     #========== OBTAINING AZURE USAGE ===============#
     #
+
+      if (${get_token} == yes)
+  {
+  	# Get an AD token from login.windows.net
+      print "Getting AD Token"
+  	
+  	# Set up the HTTP request parameters
+  	set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https%3A%2F%2Fgraph.windows.net"
+  	# ====== Possible alternative auth method with user/pass if required ===== #
+  	# set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
+  	# ======================================================================== #
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_savefile "${json_filedir}/http_savefile.json"
+  	# Get AD Token and cache it in a buffer called {token}
+  	buffer token = http POST "https://login.windows.net/${MyDomain}/oauth2/token"
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print The server response was:
+  		json format {token} 
+  		print {token}
+  		terminate with error
+  	}
+  
+  	# Create a variable called ${access_token} from the AD token in {token}
+  	var access_token = $JSON{token}.[access_token]
+  	discard {token}
+  
+  	# Use the access_token to get an App_User token
+    print "Getting AU Token"
+  	# Reset headers as we want to create a new Authorization: header
+  	clear http_headers
+  	
+  	# Set up the HTTP request parameters
+  	var partnerRoot = "https://api.partnercenter.microsoft.com"
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_header "Authorization: Bearer ${access_token}"	
+  	set http_body data "grant_type=jwt_token"
+  
+  	# Get the new token into a buffer called {token}
+  	buffer token = http POST ${partnerRoot}/generatetoken
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		print The server response was:
+  		json format {token} 
+  		print {token}
+  		terminate with error
+  	}
+  
+  	# Create a variable called ${AUtoken} from the App+User token in {token}
+  	# 2017-07 - App+User is not needed. Setting AUToken to access_token
+  	var AUtoken = ${access_token}
+  	discard {token}
+	var get_token = no
+  }
+
     print "Retrieving Azure usage data"
     
     foreach $JSON{customers}.[items] as this_customer
@@ -399,8 +455,14 @@ loop date_range ${date_diff} {
     						set http_header "Authorization: Bearer ${AUtoken}"
     
     						print getting usage for start_time=${start_time}
-    						buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
+                buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
     						json format {usage}
+                var totalCount = $JSON{usage}.[totalCount]
+                if ( ${totalCount} == "EXIVITY_NOT_FOUND" ) {
+                  print "Changing the granularity of the request to hourly"
+                  buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=hourly&showDetails=true"
+                  json format {usage}
+                }
     						save {usage} as "${json_filedir}\${today}_usage_${customer_id}_${subscription_id}.json"
     					} else {
     						# Need to use the continuation token
@@ -495,7 +557,9 @@ loop date_range ${date_diff} {
     print "this is the total count: ${totalCount}"
     print "this is the next link: ${next_link}"
     print "this is the continuationToken: ${continuationToken}"
-  
+    var get_token = yes
+
+
     # Need to use the continuation token
   	print "Calling continuationToken ... "
   	clear http_headers
@@ -521,7 +585,7 @@ loop date_range ${date_diff} {
 
   # When running in a loop, we can skip getting a new token,
   # obtaining customers, and subscriptions
-  var get_token = no
+  var get_token = yes
   var online_customers = no
   var online_subscriptions = no
   

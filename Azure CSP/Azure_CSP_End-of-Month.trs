@@ -7,10 +7,18 @@ import "system\extracted\AzureCSP\csp_usageitems_${dataDate}.csv" source azure a
     exclude customerBillableAccount usageDate partnerId	partnerName	partnerBillableAccountId domainName invoiceLineItemType mpnId tier2MpnId invoiceNumber chargeStartDate chargeEndDate billingProvider subscriptionName subscriptionDescription	billingCycleType orderId
 }
 
-# import rates
+# Import rates
 import "system\extracted\AzureCSP\csp_billingitems.csv" source azure alias stack_rates options {
     exclude detailLineItemId invoiceLineItemType sku mpnId tier2MpnId chargeStartDate chargeEndDate billingProvider
 }
+
+# Import OneTime Consumption
+import "system\extracted\AzureCSP\csp_onetimeitems.csv" source azure alias csp_onetime options { 
+    filter (["orderDate"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/)
+}
+
+# Import OneTime Consumption
+import "system\extracted\AzureCSP\${dataDate}_csp_usage.csv" source azure alias csp_usageDaily
 
 # obtain subscription names and normalise data
 rename column azure.csp_usage.customerId to customer_id
@@ -35,8 +43,34 @@ default dset azure.csp_usage
 # correlate data within datasets
 correlate azure.stack_rates.rate using resource_id2
 
-create mergedcolumn service_name separator " " from "resource_name" "resource_category" "resource_subcategory" "region"
-create mergedcolumn service_key separator " | " from "resource_id" "resource_name" "resource_category"
+if (!@DSET_EMPTY(azure.csp_onetime)) {
+delete columns azure.csp_onetime.partnerId azure.csp_onetime.customerDomainName azure.csp_onetime.customerCountry azure.csp_onetime.orderDate azure.csp_onetime.invoiceNumber azure.csp_onetime.mpnId azure.csp_onetime.resellerMpnId azure.csp_onetime.orderId azure.csp_onetime.productId azure.csp_onetime.skuId azure.csp_onetime.availabilityId azure.csp_onetime.chargeType azure.csp_onetime.unitPrice azure.csp_onetime.subtotal azure.csp_onetime.taxTotal azure.csp_onetime.currency azure.csp_onetime.discountDetails azure.csp_onetime.invoiceLineItemType azure.csp_onetime.billingProvider
+rename column azure.csp_onetime.customerId to customer_id
+rename column azure.csp_onetime.customerName to customer_name
+rename column azure.csp_onetime.productName to resource_name
+rename column azure.csp_onetime.skuName to resource_subcategory
+rename column azure.csp_onetime.totalForCustomer to rate
+capitalize values in columns azure.csp_onetime.customer_id
+append azure.csp_onetime to azure.csp_usage
+}
+
+
+create mergedcolumn service_name separator "|" from "resource_name" "resource_category" "resource_subcategory" "region"
+create mergedcolumn service_key separator " " from "resource_id" "resource_name" "resource_category"
+
+# Correlate resourceUri
+capitalize values in columns azure.csp_usageDaily.resource_id azure.csp_usageDaily.subscription_id
+default dset azure.csp_usageDaily
+create mergedcolumn correl_column separator " " from azure.csp_usageDaily.subscription_id azure.csp_usageDaily.resource_id
+default dset azure.csp_usage
+create mergedcolumn correl_column separator " " from azure.csp_usage.subscription_id azure.csp_usage.resource_id
+
+correlate azure.csp_usageDaily.resourceUri using correl_column
+
+# Extract ResourceGroup and ResourceName
+create mergedcolumn last_field from resourceUri /.*\/(.*)$/
+split resourceUri using / retaining 5
+create mergedcolumn resourceGroup separator " " from "last_field" "resourceUri_split1" "location" "region"
 
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
@@ -45,20 +79,21 @@ set rate to "0"
 set unit to "Unit/Hours"
 create column interval value "individually"
 set resource_category to "Azure Stack Generic Resources"
+set subscription_id to "One Time Resources"
 
 # cleanup
-delete columns resource_id2
+delete columns resource_id2 resourceUri last_field region location resourceUri_split1 correl_column
 
 # export data for troubleshooting
 export azure.csp_usage as "${dataDate}_CSP.csv"
 finish
-#option services = overwrite
+option services = overwrite
 services {
- effective_date = 20180801
+ effective_date = 20180802
 	service_type = automatic
 	description_col = service_name
 	category_col = resource_category
-	instance_col = resource_id
+	instance_col = resourceGroup
 	usages_col = service_key
 	set_rate_using = rate
 	#set_cogs_using = cogs
