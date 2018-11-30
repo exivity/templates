@@ -8,10 +8,29 @@
 if (${ARGC} == 0) {
     print This script requires a yyyyMMdd parameter
     terminate with error
-} 
+} else {
+	var today = ${ARG_1}
+}
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${today}
+if (${date.STATUS} != MATCH) {
+	print Argument 1 error: ${today} is not in today format
+	terminate with error
+}
+
+# Extract the Year Month
+match yearmonth "^([0-9]{6})[0-9]{2}" ${today}
+if (${yearmonth.STATUS} != MATCH) {
+	print Could not extract year and month from the supplied date (${today})
+	terminate with error 
+} else {
+	var yearmonth = ${yearmonth.RESULT}
+}
+
 # Validate the yyyyMMdd parameter and generate
 # the period and date range from it
-gosub generate_date_info(${ARG_1})
+gosub generate_date_info(${yearmonth}01)
 
 # The S3 bucket containing CUR reports
 public var bucket     = "<your bucket name>"
