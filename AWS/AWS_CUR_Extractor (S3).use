@@ -1,0 +1,176 @@
+#################################################################
+# This USE script will download a CUR Report from an S3 bucket  #
+#                                                               #
+# This needs one parameter: YYYYMMDD							#
+#																#
+#################################################################
+
+if (${ARGC} == 0) {
+    print This script requires a yyyyMMdd parameter
+    terminate with error
+} 
+# Validate the yyyyMMdd parameter and generate
+# the period and date range from it
+gosub generate_date_info(${ARG_1})
+
+# The S3 bucket containing CUR reports
+public var bucket     = "<your bucket name>"
+# Your S3 region. I.e. us-east-1, eu-central-1, etc.
+public var AWS_Region = "eu-central-1"
+# Your AWS access key
+public var access_key = "<your access key>"
+# Your AWS secret key
+public var secret_key = "<your secret>"
+# Your CUR report name
+public var CUR_report = "<name of your CUR report>"
+# Script defaults
+var AWS_Service = "s3"
+# month_dir is set by the generate_date_info() subroutine
+var save_path = "system/extracted/aws/${month_dir}"
+# AWS_range is set by the generate_date_info() subroutine
+var manifest = "cur/${CUR_report}/${AWS_range}/${CUR_report}-Manifest.json"
+gosub download_from_S3(${manifest},BUFFER,"manifest")   # Read the manifest into a buffer
+foreach $JSON{manifest}.[reportKeys] as key {
+    basename $JSON(key) as save_file
+    var key = $JSON(key)
+    gosub download_from_S3("${key}", "FILE", "${save_file}")
+    # Inflate the file (assuming it's in GZIP format)
+    match csv_name "(.*)\.gz$" ${save_file}
+    if (${csv_name.STATUS} != MATCH) {
+        print WARNING: Downloaded file does not end in .gz and will not be unzipped
+    } else {
+        gunzip "${save_path}/${save_file}" as "${save_path}/${csv_name.RESULT}"
+        print Extracted file: "${save_path}/${csv_name.RESULT}"
+    }
+}
+terminate
+# ----
+#     This subroutine downloads a file from an S3 bucket
+#     Argument 1: object name
+#     Argument 2: destination ("FILE" or "BUFFER")
+#     Argument 3: file or buffer name for the destination
+#
+#     Any downloaded files will be saves as ${save_path}/${save_file} so these
+#     variables should be set accordingly by the calling code
+# ----
+subroutine download_from_S3 {
+    # Verify that this subroutine was called with the correct number of arguments
+    gosub check_subargs("download_from_S3", ${SUBARG.COUNT}, 3)
+    # Sanity check the arguments
+    var s3_object = "${SUBARG_1}"
+    if ((${SUBARG_2} != "FILE") && (${SUBARG_2} != "BUFFER")) {
+        print Error in script: the second argument to download_from_S3() must be "FILE" or "BUFFER"
+        terminate with error
+    } else {
+        var destination_type = "${SUBARG_2}"
+    }
+    # Enact the S3 download
+    var destination_name = "${SUBARG_3}"
+    var hashed_empty_string = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    var HTTP_Method = "GET"
+    var query_params            # Empty variable
+    var host = "${bucket}.s3.amazonaws.com"
+    var date = "${OSI_TIME_UTC}"
+    var canonical_headers = "date:${date}${NEWLINE}host:${host}${NEWLINE}x-amz-content-sha256:${hashed_empty_string}${NEWLINE}"
+    var signed_headers = "date;host;x-amz-content-sha256"
+    var canonical_request = "${HTTP_Method}${NEWLINE}/${s3_object}${NEWLINE}${query_params}${NEWLINE}${canonical_headers}${NEWLINE}${signed_headers}${NEWLINE}${hashed_empty_string}"
+    hash sha256 canonical_request as hashed_canonical_request
+    # Extract the yyyyMMdd from the UTC time
+    match yyyyMMdd "(.{8})" ${date}
+    var yyyyMMdd = "${yyyyMMdd.RESULT}"
+    var string_to_sign = "AWS4-HMAC-SHA256${NEWLINE}${date}${NEWLINE}${yyyyMMdd}/${AWS_Region}/${AWS_Service}/aws4_request${NEWLINE}${hashed_canonical_request}"
+    var signature = "${string_to_sign}"
+    AWS_sign_string signature using ${secret_key} ${yyyyMMdd} ${AWS_Region} ${AWS_Service}
+    var credential_scope = "${yyyyMMdd}/${AWS_Region}/${AWS_Service}/aws4_request"
+    var auth_header = "Authorization: AWS4-HMAC-SHA256 Credential=${access_key}/${credential_scope}, SignedHeaders=${signed_headers}, Signature=${signature}"
+    set http_header ${auth_header}
+    set http_header "Date: ${date}"
+    set http_header "x-amz-content-sha256: ${hashed_empty_string}"
+    set http_progress yes
+    # Extract the filename from the S3 object key
+    basename ${s3_object} as AWS_basename
+    
+    if (${destination_type} == FILE) {
+        print "Downloading ${AWS_basename} to disk file ..."
+        set http_savefile ${save_path}/${save_file}
+        http GET https://${host}/${s3_object}
+    } else {
+        print "Downloading ${AWS_basename} to a named buffer ..."
+        buffer ${destination_name} = http GET https://${host}/${s3_object}
+    }
+    clear http_headers
+}
+# ----
+#     This subroutine does the following:
+#
+#     - Generates a date range using a yyyyMMdd parameter
+#       of the form "yyyyMMdd-yyyyMMdd" where the first
+#       yyyymmDD is the provided date and the second is the
+#       first day of the next month
+#     - Set a month_dir variable to be the yyyyMM of the parameter
+# ----
+subroutine generate_date_info {
+    # Ensure this subroutine was called with one argument
+    gosub check_subargs("generate_date_range", ${SUBARG.COUNT}, 1)
+    # Validate the format
+    match date "^([0-9]{8})$" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Error: the provided argument is not in yyyyMMdd format
+        terminate with error
+    }
+    # Add a month to the date
+    match year "^([0-9]{4})" ${SUBARG_1}
+    var end_year = ${year.RESULT}
+    match month "^[0-9]{4}([0-9]{2})" ${SUBARG_1}
+    var end_month = ${month.RESULT}
+    
+    if (${end_month} < 12) {
+        var end_month += 1
+    } else {
+        var end_year += 1
+        var end_month = 01
+    }
+    # Generate the AWS range
+    var AWS_range = "${SUBARG_1}-${end_year}${end_month}01"
+    # Generate the output directory name
+    match month_dir "^([0-9]{6})" ${SUBARG_1}
+    var month_dir = ${month_dir.RESULT} 
+}
+# ----
+#     This subroutine generates an error message for
+#     other subroutines if they do not have the correct
+#     number of arguments
+#
+#     It is provided as a useful method for detecting internal
+#     script errors whereby a subroutine is called with the
+#     wrong number of arguments
+#
+#     Parameters:
+#        1: The name of the calling subroutine
+#        2: The number of arguments provided
+#        3: The minimum number of arguments permitted
+#        4: OPTIONAL: The maximum number of arguments permitted
+# ----
+subroutine check_subargs {
+    # A check specific to this subroutine as it can't sanely call itself
+    if ( (${SUBARG.COUNT} < 3) || (${SUBARG.COUNT} > 4) ) {
+        print Error in script: check_subargs() requires 3 or 4 arguments but was given ${SUBARG.COUNT}
+        terminate with error
+    }
+    # A generic check
+    var SCS_arg_count = ${SUBARG_2}
+    var SCS_min_args = ${SUBARG_3}
+    if (${SUBARG.COUNT} == 3) {
+       var SCS_max_args = ${SUBARG_3}
+    } else {
+       var SCS_max_args = ${SUBARG_4}
+    }
+    if ( (${SCS_arg_count} < ${SCS_min_args}) || (${SCS_arg_count} > ${SCS_max_args}) ) {
+        if (${SCS_min_args} == ${SCS_max_args}) {
+            print Error in script: the ${SUBARG_1}() subroutine requires ${SCS_min_args} arguments but was given ${SCS_arg_count}
+        } else {
+            print Error in script: the ${SUBARG_1}() subroutine requires from ${SCS_min_args} to ${SCS_max_args} arguments but was given ${SCS_arg_count}
+        }
+        terminate with error
+    }
+}
