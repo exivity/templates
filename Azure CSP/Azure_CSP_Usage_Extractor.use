@@ -543,7 +543,7 @@ loop date_range ${date_diff} {
     var continuationToken = $JSON{customers}.[continuationToken]
     
     # skip if we don't have a next_link
-    if (${next_link} == "EXIVITY_NOT_FOUND") {
+    if ("${next_link}" == "EXIVITY_NOT_FOUND") {
     print "no next link, we can finish."
     exit_loop
     }

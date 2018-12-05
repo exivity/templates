@@ -71,6 +71,16 @@ else {
   var actualmonth = ${MONTH}
   var actualmonth -= 1
 }
+#if ((${offset} == 1) && (${DAY} >= 17)) {
+#  var actualmonth = ${MONTH}
+#}
+#if ((${offset} == 1) && (${DAY} < 17)) {
+#  var actualmonth = ${MONTH}
+#  var actualmonth -= 1
+#}
+#if ((${offset} != 0) && (${offset} != 1)) {
+#  var actualmonth = ${MONTH}
+#}
 
 if (${offset} >= 12) {
   var offset2 = ${offset}
@@ -329,7 +339,7 @@ var json_filedir = "${exportdir}/json"
 
                  var address = $JSON{lineItems}.[links].[next].[uri]
                  print ${address}
-               if (${address} != "EXIVITY_NOT_FOUND") {
+               if ("${address}" != "EXIVITY_NOT_FOUND") {
                  var address = $JSON{lineItems}.[links].[next].[uri]
                  print The new address is ${address}
                } else {
@@ -445,7 +455,7 @@ var json_filedir = "${exportdir}/json"
                  }
                  var address = $JSON{lineItems}.[links].[next].[uri]
                  print ${address}
-               if (${address} != "EXIVITY_NOT_FOUND") {
+               if ("${address}" != "EXIVITY_NOT_FOUND") {
                  var address = $JSON{lineItems}.[links].[next].[uri]
                  print The new address is ${address}
                  var linkscounter += 1
