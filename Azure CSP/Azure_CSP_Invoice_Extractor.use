@@ -421,7 +421,7 @@ var json_filedir = "${exportdir}/json"
                     foreach $JSON{lineItems}.[items] as this_lineItem
                     {
                        var jsonday = $JSON(this_lineItem).[usageDate]
-                       if (${jsonday} == "${actualyear}-${actualmonth2}-${actualday}T00:00:00") {
+                       if ("${jsonday}" == "${actualyear}-${actualmonth2}-${actualday}T00:00:00") {
                        csv write_field usage $JSON(this_lineItem).[customerBillableAccount]
                        csv write_field usage $JSON(this_lineItem).[usageDate]
                        csv write_field usage $JSON(this_lineItem).[invoiceLineItemType]
