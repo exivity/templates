@@ -1,10 +1,10 @@
 option loglevel = DEBUGX
-option embed = YES
+#option embed = YES
 #
 # Import usage from Azure CSP
 #
 import "system\extracted\AzureCSP\csp_usageitems_${dataDate}.csv" source azure alias csp_usage options {
-    exclude customerBillableAccount usageDate partnerId	partnerName	partnerBillableAccountId domainName invoiceLineItemType mpnId tier2MpnId invoiceNumber chargeStartDate chargeEndDate billingProvider subscriptionName subscriptionDescription	billingCycleType orderId
+    exclude customerBillableAccount usageDate partnerId	partnerName	partnerBillableAccountId domainName invoiceLineItemType mpnId invoiceNumber chargeStartDate chargeEndDate billingProvider subscriptionDescription	billingCycleType orderId
 }
 
 # Import rates
@@ -12,12 +12,20 @@ import "system\extracted\AzureCSP\csp_billingitems.csv" source azure alias stack
     exclude detailLineItemId invoiceLineItemType sku mpnId tier2MpnId chargeStartDate chargeEndDate billingProvider
 }
 
+# Import ratecard (to get the normalised name for Resource_name, category and subcategory)
+import "system\extracted\AzureCSP_rates\csp_rates_per_threshold.csv" source azure alias ratecard
+
 # Import OneTime Consumption
 import "system\extracted\AzureCSP\csp_onetimeitems.csv" source azure alias csp_onetime options { 
     filter (["orderDate"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/)
 }
 
-# Import OneTime Consumption
+# Import Office Consumption
+import "system\extracted\AzureCSP\csp_officeitems.csv" source azure alias csp_office options { 
+    filter (["chargeStartDate"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/)
+}
+
+# Import Daily Consumption
 import "system\extracted\AzureCSP\${dataDate}_csp_usage.csv" source azure alias csp_usageDaily
 
 # obtain subscription names and normalise data
@@ -31,7 +39,7 @@ rename column azure.csp_usage.resourceGuid to resource_id
 rename column azure.csp_usage.subscriptionId to subscription_id
 rename column azure.stack_rates.pretaxEffectiveRate to rate
 
-capitalize values in columns customer_id resource_name resource_category resource_subcategory unit region customer_name
+capitalize values in columns customer_id resource_name resource_category resource_subcategory unit region
 
 # merge columns in order to correlate rates and usage, first we need to make sure both columns have the same format
 capitalize values in columns azure.csp_usage.resource_id azure.stack_rates.resourceGuid azure.csp_usage.subscription_id azure.stack_rates.subscriptionId
@@ -44,19 +52,54 @@ default dset azure.csp_usage
 correlate azure.stack_rates.rate using resource_id2
 
 if (!@DSET_EMPTY(azure.csp_onetime)) {
-delete columns azure.csp_onetime.partnerId azure.csp_onetime.customerDomainName azure.csp_onetime.customerCountry azure.csp_onetime.orderDate azure.csp_onetime.invoiceNumber azure.csp_onetime.mpnId azure.csp_onetime.resellerMpnId azure.csp_onetime.orderId azure.csp_onetime.productId azure.csp_onetime.skuId azure.csp_onetime.availabilityId azure.csp_onetime.chargeType azure.csp_onetime.unitPrice azure.csp_onetime.subtotal azure.csp_onetime.taxTotal azure.csp_onetime.currency azure.csp_onetime.discountDetails azure.csp_onetime.invoiceLineItemType azure.csp_onetime.billingProvider
+delete columns azure.csp_onetime.partnerId azure.csp_onetime.customerDomainName azure.csp_onetime.customerCountry azure.csp_onetime.orderDate azure.csp_onetime.invoiceNumber azure.csp_onetime.orderId azure.csp_onetime.productId azure.csp_onetime.skuId azure.csp_onetime.availabilityId azure.csp_onetime.chargeType azure.csp_onetime.totalForCustomer azure.csp_onetime.subtotal azure.csp_onetime.taxTotal azure.csp_onetime.currency azure.csp_onetime.discountDetails azure.csp_onetime.invoiceLineItemType azure.csp_onetime.billingProvider
 rename column azure.csp_onetime.customerId to customer_id
 rename column azure.csp_onetime.customerName to customer_name
+rename column azure.csp_onetime.resellerMpnId to tier2MpnId
 rename column azure.csp_onetime.productName to resource_name
 rename column azure.csp_onetime.skuName to resource_subcategory
-rename column azure.csp_onetime.totalForCustomer to rate
+rename column azure.csp_onetime.unitPrice to rate
 capitalize values in columns azure.csp_onetime.customer_id
 append azure.csp_onetime to azure.csp_usage
 }
 
+if (!@DSET_EMPTY(azure.csp_office)) {
+default dset azure.csp_office
+delete columns azure.csp_office.partnerId azure.csp_office.customerDomainName azure.csp_office.chargeStartDate azure.csp_office.invoiceNumber azure.csp_office.mpnId azure.csp_office.resellerMpnId azure.csp_office.domainName azure.csp_office.productId azure.csp_office.durableOfferId azure.csp_office.availabilityId azure.csp_office.subtotal azure.csp_office.taxTotal azure.csp_office.currency azure.csp_office.invoiceLineItemType azure.csp_office.billingProvider
+rename column azure.csp_office.customerId to customer_id
+rename column azure.csp_office.customerName to customer_name
+rename column azure.csp_office.subscriptionName to resource_nameOffice
+rename column azure.csp_office.subscriptionId to subscription_id
+option overwrite = YES
+set quantity to 1
+rename column azure.csp_office.subscriptionDescription to subscriptionName
+rename column azure.csp_office.offerName to resource_subcategoryOffice
+rename column azure.csp_office.totalForCustomer to rate
+replace " " in azure.csp_office.chargeType
+create mergedcolumn resource_id separator " " from azure.csp_office.syndicationPartnerSubscriptionNumber azure.csp_office.offerId azure.csp_office.chargeType azure.csp_office.unitPrice
+rename column azure.csp_office.chargeType to location
+capitalize values in columns azure.csp_office.customer_id
+create column azure.csp_office.ResourceGroupOffice value "Office"
+option overwrite = no
+default dset azure.csp_usage
+append azure.csp_office to azure.csp_usage
+}
 
-create mergedcolumn service_name separator "|" from "resource_name" "resource_category" "resource_subcategory" "region"
-create mergedcolumn service_key separator " " from "resource_id" "resource_name" "resource_category"
+if (!@DSET_EMPTY(azure.ratecard)) {
+default dset azure.ratecard
+capitalize values in columns azure.ratecard.meter_id
+rename column meter_id to resource_id
+default dset azure.csp_usage
+correlate azure.ratecard.meter_name azure.ratecard.category azure.ratecard.subcategory using resource_id
+delete columns resource_name resource_category resource_subcategory
+rename column meter_name to resource_name
+rename column category to resource_category
+rename column subcategory to resource_subcategory
+}
+
+
+create mergedcolumn service_name separator " - " from "resource_nameOffice" "resource_subcategoryOffice" "resource_name" "resource_subcategory" "location" "region"
+create mergedcolumn service_key from "resource_id"
 
 # Correlate resourceUri
 capitalize values in columns azure.csp_usageDaily.resource_id azure.csp_usageDaily.subscription_id
@@ -68,9 +111,10 @@ create mergedcolumn correl_column separator " " from azure.csp_usage.subscriptio
 correlate azure.csp_usageDaily.resourceUri using correl_column
 
 # Extract ResourceGroup and ResourceName
-create mergedcolumn last_field from resourceUri /.*\/(.*)$/
+create mergedcolumn instance from resourceUri /.*\/(.*)$/
 split resourceUri using / retaining 5
-create mergedcolumn resourceGroup separator " " from "last_field" "resourceUri_split1" "location" "region"
+rename column resourceUri_split1 to resourceGroup
+capitalize values in columns resourceGroup
 
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
@@ -80,9 +124,37 @@ set unit to "Unit/Hours"
 create column interval value "individually"
 set resource_category to "Azure Stack Generic Resources"
 set subscription_id to "One Time Resources"
+set instance as resource_name
+
+
+# Set reseller Name
+option overwrite = YES
+default dset azure.csp_usage
+where ([azure.csp_usage.tier2MpnId] == "-1") {
+	set tier2MpnId to "Direct Customer"
+} 
+
+#where ([azure.csp_usage.ResellerName] == "No Reseller") {
+#	set ResellerName to ""
+#} 
+
+#create mergedcolumn Reseller separator " " from tier2MpnId ResellerName
+create mergedcolumn Reseller separator " " from tier2MpnId
+# End of reseller Name creation
+
+
+if (!@DSET_EMPTY(azure.csp_office)) {
+option overwrite = NO
+set resourceGroup to "Office"
+set instance as resource_nameOffice
+}
+
+capitalize values in columns customer_name
+option overwrite = NO
+set resourceGroup to "Reserved Instance"
 
 # cleanup
-delete columns resource_id2 resourceUri last_field region location resourceUri_split1 correl_column
+delete columns resource_id2 billingCycleType amount ResourceGroupOffice region orderId	offerId	totalForCustomer location correl_column subscriptionStartDate	subscriptionEndDate	chargeEndDate totalOtherDiscount tax
 
 # export data for troubleshooting
 export azure.csp_usage as "${dataDate}_CSP.csv"
@@ -93,12 +165,13 @@ services {
 	service_type = automatic
 	description_col = service_name
 	category_col = resource_category
-	instance_col = resourceGroup
+	instance_col = instance
 	usages_col = service_key
-	set_rate_using = rate
-	#set_cogs_using = cogs
+	rate_col = rate
+	#cogs_col = cogs
 	interval_col  = interval
 	unit_label_col = unit 
 	consumption_col = quantity
 }
+
 
