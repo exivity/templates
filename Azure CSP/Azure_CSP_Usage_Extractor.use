@@ -11,12 +11,6 @@
 # ==========================================================
 #                                                               
 # This needs two parameters, FROM and TO date in: YYYYMMDD
-#
-# NOTE: FROM and TO date should not overlap more than 1 month.
-#		In case it does overlap 1 month, it will reset the FROM
-#		date to the last day of the FROM month. And the TO date
-#		to the first day of the TO month. Support for overlapping
-#		months will be included in a future release.
 #																
 #################################################################
 
@@ -147,11 +141,8 @@ var date_diff -= ${day}
 var next_day = ${day}
 
 if (${month} != ${tomorrow_month}) {
-  print "WARNING! spanning two months not available for > 1 day."
-  print "Resetting day variable to last day of the FROM month ..."
+
   get_last_day_of ${year}${month} as lastday
-  print "Resetting tomorrow_day variable to first day of the to month ..."
-  print "the last day of this month is: ${lastday}"
   #var tomorrow_day = 01
   
   var date_diff = ${lastday}
@@ -165,27 +156,43 @@ if (${month} != ${tomorrow_month}) {
   var date_diff += ${tomorrow_day}
   var tomorrow_month = ${month}
   var month_flag = "yes"
-  
+  if (${year} != ${tomorrow_year}) {
+	var tomorrow_year = ${year}
+	var year_flag = "yes"
+  }
 } else {
   var lastday = ${day}
   var month_flag = "no"
 }
 
 
-
 loop date_range ${date_diff} {
   
-  if ((${day} == ${lastday}) && (${month_flag} == "yes")){
+  if ((${day} == ${lastday}) && (${month_flag} == "yes") && (${tomorrow_month} != 12)){
   var next_day = 00
   var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
   var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
   var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
   var tomorrow_month += 1
-  } if ((${day} > ${lastday}) && (${month_flag} == "yes")) {
+  }
+  if ((${day} == ${lastday}) && (${month_flag} == "yes") && (${tomorrow_month} == 12)){
+  var next_day = 00
+  var customer_export_file = "${exportdir}/${year}${month}${day}_csp_customers.csv"
+  var subscriptions_export_file = "${exportdir}/${year}${month}${day}_csp_subscriptions.csv"
+  var usage_export_file = "${exportdir}/${year}${month}${day}_csp_usage.csv"
+  var tomorrow_month = 01
+  var tomorrow_year += 1
+  }
+  if ((${day} > ${lastday}) && (${month_flag} == "yes")) {
   var next_day = 01
   var day = 01
   var month2 = ${tomorrow_month}
   var month = ${tomorrow_month}
+  
+  if (${year_flag} == "yes") {
+  var year = ${tomorrow_year}
+  }
+
   var customer_export_file = "${exportdir}/${year}${month2}${day}_csp_customers.csv"
   var subscriptions_export_file = "${exportdir}/${year}${month2}${day}_csp_subscriptions.csv"
   var usage_export_file = "${exportdir}/${year}${month2}${day}_csp_usage.csv"
@@ -454,7 +461,7 @@ loop date_range ${date_diff} {
     						set http_header "Accept: application/json"
     						set http_header "Authorization: Bearer ${AUtoken}"
     
-    						print getting usage for start_time=${start_time}
+    						print getting usage for start_time=${start_time} with end_time=${end_time}
                 buffer usage = http GET "${partnerRoot}/v1/customers/${customer_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
     						json format {usage}
                 var totalCount = $JSON{usage}.[totalCount]

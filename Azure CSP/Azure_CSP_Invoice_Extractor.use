@@ -69,18 +69,12 @@ if (${DAY} >= ${Billing_start_day}) {
 }
 else {
   var actualmonth = ${MONTH}
+  if (${actualmonth} == 01) {
+  var actualmonth = 12
+  } else {
   var actualmonth -= 1
+  }
 }
-#if ((${offset} == 1) && (${DAY} >= 17)) {
-#  var actualmonth = ${MONTH}
-#}
-#if ((${offset} == 1) && (${DAY} < 17)) {
-#  var actualmonth = ${MONTH}
-#  var actualmonth -= 1
-#}
-#if ((${offset} != 0) && (${offset} != 1)) {
-#  var actualmonth = ${MONTH}
-#}
 
 if (${offset} >= 12) {
   var offset2 = ${offset}
@@ -94,7 +88,12 @@ else {
 var previousmonth = ${actualmonth}
 var previousmonth -= 1
 
-print Calculating report for month ${actualmonth} and year ${actualyear}
+if (${previousmonth} == 00) {
+  var previousmonth == 12
+  var actualyear -= 1
+}
+
+print Calculating report for month ${actualmonth} and year ${actualyear} previous month is: ${previousmonth}
 
 #Calculating number of days in the MS Billing month
 get_last_day_of ${actualyear}${previousmonth} as loopcount
@@ -364,7 +363,11 @@ var json_filedir = "${exportdir}/json"
   # Initial variables
   var actualday = ${Billing_start_day}
   var actualmonth2 = ${actualmonth}
+  if (${actualmonth2} == 01) {
+  var actualmonth2 = 12
+  } else {
   var actualmonth2 -= 1
+  } 
   var getfromjson = "no"
   
   loop dayofthemonth ${loopcount} {
@@ -486,6 +489,10 @@ var json_filedir = "${exportdir}/json"
     if (${actualday} > ${loopcount} ) {
       var actualday = 01
       var actualmonth2 += 01
+      if (${actualmonth2} == 13) {
+       var actualmonth2 = 01
+       var actualyear += 01
+      }
     }
     
   }
