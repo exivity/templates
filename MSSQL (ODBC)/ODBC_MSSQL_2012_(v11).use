@@ -1,0 +1,50 @@
+#################################################################
+# Example Extractor to obtain data from an ODBC database server #
+#                                                               #
+# This example shows how to query a MSSQL 2012 (v11)compatible  #
+# database using default options. Query string may be adjusted  #
+#                                                               #
+#################################################################
+#
+loglevel INFO
+#====================== Validation ======================#
+if (${ARGC} < 1)
+{
+    print This requires 1 argument, the day to collect usage for in yyyyMMdd format.
+    terminate with error 
+} else {
+    var dataDate = ${ARG_1}
+}
+# Validate the date formats
+match date "^([0-9]{8})$" ${dataDate}
+if (${date.STATUS} != MATCH) {
+    print Argument 1 error: ${dataDate} is not in yyyyMMdd format
+    terminate
+} else {
+  match YearMonth "^([0-9]{6})[0-9]{2}" ${dataDate}
+}
+#====================== Validation ======================#
+
+
+# Servername, with optionally the instance in case of a named instance
+public var server = "<hostname-of-the server>"
+# Name of the database
+public var database = "<database>"
+# SQL User
+public var usr = "<sql-user>"
+# SQL password
+public var pwd = "<your-password"
+# MSSQL server port
+public var port = "1433"
+# SQL Query
+public var query = "select * from table;"
+# output file format
+public var SaveQuery = "system/extracted/ODBC/MSSQL-v11/${dataDate}_mssql_odbc.csv"
+
+# connect string
+var ODBCstring = "Driver={SQL Server Native Client 11.0};Server=${server},${port};Database=${database};Uid=${usr};Pwd=${pwd};"
+
+# query the database and write the output to disk
+set odbc_connect ${ODBCstring}
+buffer output = odbc_direct ${query}
+save {output} as ${SaveQuery}
