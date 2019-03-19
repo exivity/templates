@@ -160,6 +160,10 @@ if (${month} != ${tomorrow_month}) {
 	var tomorrow_year = ${year}
 	var year_flag = "yes"
   }
+  else {
+   var tomorrow_year = ${year}
+   var year_flag = "no" 
+  }
 } else {
   var lastday = ${day}
   var month_flag = "no"
@@ -211,7 +215,7 @@ loop date_range ${date_diff} {
   
   print "Set subscriptions export csv to ${subscriptions_export_file} ..."
   csv "subscriptions" = ${subscriptions_export_file}
-  csv add_headers "subscriptions" customer_id tenant_id companyName subscription_id offerId offerName quantity unitType creationDate effectiveStartDate commitmentEndDate status autoRenewEnabled billingType contractType
+  csv add_headers "subscriptions" customer_id tenant_id companyName subscription_id offerId offerName friendlyName quantity unitType creationDate effectiveStartDate commitmentEndDate status autoRenewEnabled billingType contractType
   csv fix_headers "subscriptions"
   
   print "Set usage export csv to ${usage_export_file} ..."
@@ -288,7 +292,7 @@ loop date_range ${date_diff} {
   	# 2017-07 - App+User is not needed. Setting AUToken to access_token
   	var AUtoken = ${access_token}
   	discard {token}
-	var get_token = no
+	#var get_token = no
   }
   
   #======== OBTAINING CUSTOMER ==========#
@@ -335,6 +339,9 @@ loop date_range ${date_diff} {
     		buffer subscriptions = FILE "${json_filedir}/${today}_subs_${c_id}.json"
     	} else {
     		# Create the customer savefiles for offline use and get the data from Azure
+        clear http_headers
+        set http_header "Accept: application/json"
+        set http_header "Authorization: Bearer ${AUtoken}"	
     		buffer subscriptions = http get ${partnerRoot}/v1/customers/${c_id}/subscriptions
     		json format {subscriptions}
     		save {subscriptions} as "${json_filedir}/${today}_subs_${c_id}.json"
@@ -350,6 +357,7 @@ loop date_range ${date_diff} {
     			csv write_field "subscriptions" $JSON(this_subscription).[id]
     			csv write_field "subscriptions" $JSON(this_subscription).[offerId]
     			csv write_field "subscriptions" $JSON(this_subscription).[offerName]
+				csv write_field "subscriptions" $JSON(this_subscription).[friendlyName]
     			csv write_field "subscriptions" $JSON(this_subscription).[quantity]
     			csv write_field "subscriptions" $JSON(this_subscription).[unitType]
     			csv write_field "subscriptions" $JSON(this_subscription).[creationDate]
@@ -419,7 +427,7 @@ loop date_range ${date_diff} {
   	# 2017-07 - App+User is not needed. Setting AUToken to access_token
   	var AUtoken = ${access_token}
   	discard {token}
-	var get_token = no
+	# var get_token = no
   }
 
     print "Retrieving Azure usage data"
