@@ -39,6 +39,7 @@ create column interval value "individually"
 finish
 
 services {
+  effective_date = 20180101
   service_type = automatic
   description_col = Product # column name
   category_col = MeterCategory # column with category value
