@@ -1,0 +1,128 @@
+#==================== NetApp StorageGrid API TEMPLATE  ====================#
+#
+#           This is a template Extractor for NetApp StorageGrid API
+#
+#==================== NetApp StorageGrid API TEMPLATE  ====================#
+#
+#=========================== Date Validation  ============================#
+loglevel INFO
+if (${ARGC} < 1)
+{
+	#print This requires 1 argument, the day to collect usage for in yyyyMMdd format.
+	terminate
+} else {
+	var dataDate = ${ARG_1}
+}
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${dataDate}
+if (${date.STATUS} != MATCH) {
+	#print Argument 1 error: ${dataDate} is not in yyyyMMdd format
+	terminate
+} else {
+  match YearMonth "^([0-9]{6})[0-9]{2}" ${dataDate}
+  var FirstOfMonth = "${YearMonth.RESULT}01"
+}
+#=========================== Date Validation  ===========================#
+#
+#
+#=========================== Public Variables  ==========================#
+public var username = "your_username"
+public var password = your_password
+public var hostname = "your_hostname"
+public var authentication_endpoint = "https://${hostname}/api/v3/authorize"
+public var request_endpoint_accounts = "https://${hostname}/api/v3/grid/accounts"
+public var authentication_payload = "{ \"username\": \"${username}\", \"password\": \"${password}\", \"cookie\": true, \"csrfToken\": false}"
+public var JSON_dir = "system/extracted/storagegrid_api/json"
+public var CSV_dir = "system/extracted/storagegrid_api/csv"
+public var httptimeout = "500" 
+#========================== Public Variables  ===========================#
+#
+#
+#====================== Request Authention Token  =======================#
+set http_timeout ${httptimeout}  # Set the timeout to 500 seconds
+set http_body data ${authentication_payload}
+set http_savefile "${JSON_dir}/token.json"
+set http_header "accept: application/json" 
+set http_header "Content-Type: application/json"
+set http_progress yes
+public var retries = "5"
+public var retry_timeout = "5000" #timeout in milliseconds
+loop retry ${retries} {
+    buffer token = http POST ${authentication_endpoint}
+    if (${HTTP_STATUS_CODE} == 200) {
+        exit_loop
+    } else {
+        if (${retry.COUNT} == ${retries}) {
+            print Server response was ${HTTP_STATUS_CODE} (expected 200)
+            print Extraction failed after re-trying ${retries} times
+            terminate
+        } else {
+            print Server response was ${HTTP_STATUS_CODE} (expected 200): Retrying (${retry.COUNT} of ${retries})
+            pause ${retry_timeout} # Wait x seconds before retrying
+        }
+    } 
+}
+print The server response was:
+json format {token} 
+print Token extraction completed in (${retry.COUNT} of ${retries})
+clear http_headers
+var access_token = "$JSON{token}.[data]"
+discard {token}
+#==================== Request Authention Token  ====================#
+#
+#
+#==================== Request all accounts from storagegrid API and process its usage ====================#
+print -n Retrieving accounts from endpoint...
+set http_header "accept: application/json" 
+set http_header "Authorization: Bearer ${access_token}"
+set http_savefile "${JSON_dir}/accounts_data.json"
+buffer storagegrid_data_accounts = http GET "${request_endpoint_accounts}"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+	print The server response was:
+	json format {storagegrid_data_accounts} 
+	print {storagegrid_data_accounts}
+	print Exiting
+	terminate
+}
+print -n done
+set http_savefile "${JSON_dir}/usage_data.json"
+foreach $JSON{storagegrid_data_accounts}.[data] as this_account {
+    var account_unique_id = $JSON(this_account).[id]
+    var account_unique_name = $JSON(this_account).[name]
+    public var request_storagegrid_usage_id = "https://${hostname}/api/v3/grid/accounts/${account_unique_id}/usage"
+    loop retry ${retries} {
+        buffer request_bucket_usage = http get ${request_storagegrid_usage_id}
+        if (${HTTP_STATUS_CODE} == 200) {
+            exit_loop
+        } else {
+            if (${retry.COUNT} == ${retries}) {
+                print Server response was ${HTTP_STATUS_CODE} (expected 200)
+                print Extraction failed after re-trying ${retries} times
+                terminate
+            } else {
+                print Server response was ${HTTP_STATUS_CODE} (expected 200): Retrying (${retry.COUNT} of ${retries})
+                pause ${retry_timeout} # Wait x seconds before retrying
+            }
+        }
+    }
+    # Create a headed CSV with column names corresponding to those in the data
+    print -n Saving consumption data for each account bucket into a file...
+    public var filename = "${CSV_dir}/${dataDate}_${HOUR}_${MINUTE}_${account_unique_name}_storagegrid_usage.csv"
+    csv "storagegrid_account_usage" = "${filename}"
+    csv add_header "storagegrid_account_usage" id name bucket objectCount dataBytes
+    csv fix_headers "storagegrid_account_usage"
+    foreach $JSON{request_bucket_usage}.[data].[buckets] as this_bucket { 
+        csv write_field "storagegrid_account_usage" $JSON(this_account).[id]
+        csv write_field "storagegrid_account_usage" $JSON(this_account).[name]
+        csv write_field "storagegrid_account_usage" $JSON(this_bucket).[name]
+        csv write_field "storagegrid_account_usage" $JSON(this_bucket).[objectCount]
+        csv write_field "storagegrid_account_usage" $JSON(this_bucket).[dataBytes]
+    }
+    csv close "storagegrid_account_usage"
+}
+clear http_headers
+print -n done
+terminate
+#==================== Request all accounts from storagegrid API and process its usage ====================#
