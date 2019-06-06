@@ -1,4 +1,4 @@
-option loglevel = INFO
+option loglevel = DEBUGX
 option embed = YES
 
 #
@@ -9,10 +9,20 @@ import "system\extracted\AzureStack\${dataDate}_stack_usage.csv" source azure al
 import "system\extracted\AzureStack\${dataDate}_stack_subscriptions.csv" source azure alias subscriptions
 
 # import example rates
-import "system\extracted\AzureStack\rates\azure_stack_example_rates.csv" source azure alias stack_rates
+import "import/lookup/AzureStack_rates.csv" source azure alias stack_rates # CHANGE THIS DIRECTORY/FILE TO YOUR OWN RATES
+
+# import example rates
+default dset azure.stack_rates
+lowercase values in column service_key
+lowercase values in column "Parent Meter"
+create mergedcolumn correlCol separator " " from service_name "Parent Meter"
 
 # obtain subscription names and normalise data
+default dset azure.stack_usage
+
 correlate azure.subscriptions.displayName using subscriptionId
+
+#correlate azure.subscriptions.displayName using subscriptionId
 rename column displayName to "Subscription Name"
 rename column subscriptionId to "Subscription ID"
 rename column meterId to "Meter ID"
@@ -20,25 +30,38 @@ rename column meterId to "Meter ID"
 delete columns id name type
 
 # get the service and image type tags
-create mergedcolumn ServiceType from additionalInfo /.ServiceType...(.+).,./
-create mergedcolumn ImageType from additionalInfo /.ImageType...(.+)\"/
+create mergedcolumn ImageType from additionalInfo /.*ImageType[:\"]*([^\",}]*).*/
+create mergedcolumn ServiceType from additionalInfo /.*ServiceType[:\"]*([^\",}]*).*/
 delete column additionalInfo
 
+export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}BUG.csv" 
 # set the resource group, provider and resource id
-split resourceUri using /
-rename column resourceUri_split5 to "Resource Group"
-rename column resourceUri_split7 to "Provider"
-create mergedcolumn "Resource ID" separator " " from resourceUri_split9 ServiceType ImageType
-delete columns resourceUri_split1	resourceUri_split2	resourceUri_split3	resourceUri_split4	resourceUri_split5	resourceUri_split6	resourceUri_split7	resourceUri_split8	resourceUri_split9
+create mergedcolumn "Resource Group" from resourceUri /resourceGroups\/(.*)\/providers/
+#create mergedcolumn Resource from resourceUri /\/(\w*)$/
+create mergedcolumn "Resource ID" from resourceUri /\/(\w*)$/
 
 # Uppercase meters and create unique services
 uppercase values in column "Meter ID"
 create mergedcolumn service_key from "Meter ID"
+lowercase values in column service_key
 
 # import columns from the rate example csv using service_key correlation
-correlate azure.stack_rates.Category azure.stack_rates."service_name" azure.stack_rates.unit azure.stack_rates."Additional info" azure.stack_rates.rate azure.stack_rates.cogs azure.stack_rates.interval using "service_key"
-delete column service_key
-create mergedcolumn service_key separator "|" from "Meter ID" "ServiceType"
+
+where ([ServiceType] != "") {
+  move row to azure.rates
+}
+
+default dset azure.rates
+create mergedcolumn correlCol separator " " from ServiceType service_key
+correlate unit rate using correlCol assuming azure.stack_rates
+rename column ServiceType to service_name
+
+default dset azure.stack_usage
+correlate service_name unit rate using "service_key" assuming azure.stack_rates
+append azure.rates to azure.stack_usage
+#delete column service_key
+#create mergedcolumn service_key from "Meter ID"
+create column Category value "Azure Stack Services"
 
 # auto generate VM Size Type service names
 create mergedcolumn vms_size_service separator " " from "ServiceType" "service_name"
@@ -49,30 +72,30 @@ where ([service_key] =~ /.*[a-zA-Z]*_.*/) {
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
 set rate to "0"
-set cogs to "0"
+create column cogs value "0"
 set unit to "Unit/Hours"
-set interval to individually
+create column interval value "individually"
 set Category to "Azure Stack Generic Resources"
 
 # cleanup
-delete columns resourceUri tags usageStartTime	usageEndTime
+delete columns resourceUri tags usageStartTime    usageEndTime
 
 # export data for troubleshooting
-export azure.stack_usage as "stack_usage.csv" 
+export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}.csv" 
 
 finish
-option services = overwrite
+
+# option services = overwrite
 services {
   effective_date = 20180101
-	service_type = automatic
-	description_col = service_name
-	category_col = Category
-	instance_col = "Resource ID"
-	usages_col = service_key
-	set_rate_using = rate
-	set_cogs_using = cogs
-	interval_col  = interval
-	unit_label_col = unit 
-	consumption_col = quantity
-}
+    service_type = automatic
+    description_col = service_name
+    category_col = Category
+    instance_col = "Resource ID"
+    usages_col = service_key
+    set_rate_using = rate
+    set_cogs_using = cogs
+    interval_col  = interval
+    unit_label_col = unit 
+    consumption_col = quantity
 }

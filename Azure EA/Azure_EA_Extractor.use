@@ -1,8 +1,8 @@
-loglevel WARN
+loglevel DEBUGX
 #################################################################
 # This USE script will download Azure EA billing csv's          #
 #                                                               #
-# This needs two parameters: 
+# This needs two parameters:
 # - from date in YYYYMMDD format
 # - to date in YYYYMMDD format
 #
@@ -11,103 +11,235 @@ loglevel WARN
 # - This script can be extended to include subscription details #
 #                                                               #
 #################################################################
-
-
 if (${ARGC} != 2)
 {
-	print This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format
-	terminate
+                print This requires 2 argument, the start_day and the end_day, both in yyyyMMdd format
+                terminate
 } else {
-	var today = ${ARG_1}
-	var tomorrow = ${ARG_2}
+                var today = ${ARG_1}
+                var tomorrow = ${ARG_2}
 }
-
 # Validate the date formats
 match date "^([0-9]{8})$" ${today}
 if (${date.STATUS} != MATCH) {
-	print Argument 1 error: ${today} is not in today format
-	terminate
+                print Argument 1 error: ${today} is not in today format
+                terminate
 }
-
 match date "^([0-9]{8})$" ${tomorrow}
 if (${date.STATUS} != MATCH) {
-	print Argument 2 error: ${tomorrow} is not in today format
-	terminate
+                print Argument 2 error: ${tomorrow} is not in today format
+                terminate
 }
-
 #
 # Set global configuration
 #
 public var EA_endpoint = "https://ea.azure.com" # end point of the Azure EA API
 public var EA_enrollment = "123456789" # The enrollment number of the EA subscription
-public var EA_secret = "<please provide your secret>" # fill in your secret, and optionally use the "Encrypt variable" option
+public var EA_secret = "EA-Secret" # fill in your secret, and optionally use the "Encrypt variable" option
 public var exportdir = "system/extracted/AzureEA" # make sure this directory exist before running this extractor
-public var usage_export_file = "${exportdir}/${today}_ea_usage.csv"
+
 
 #
 #=================  End Configuration ==================#
-
-
 #=================  Date Formatting  ==================#
-
 # Extract the day, month and year fields from the dates
 match day "^[0-9]{6}([0-9]{2})" ${today}
 if (${day.STATUS} != MATCH) {
-	print Could not extract day from the supplied date (${today})
-	terminate
+                print Could not extract day from the supplied date (${today})
+                terminate
 } else {
-	var day = ${day.RESULT}
+                var day = ${day.RESULT}
 }
-
 match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${today}
 if (${day.STATUS} != MATCH) {
-	print Could not extract month from the supplied date (${today})
-	terminate
+                print Could not extract month from the supplied date (${today})
+                terminate
 } else {
-	var month = ${month.RESULT}
+                var month = ${month.RESULT}
 }
-
 match year "^([0-9]{4})[0-9]{4}" ${today}
 if (${year.STATUS} != MATCH) {
-	print Could not extract year from the supplied date (${today})
-	terminate
+                print Could not extract year from the supplied date (${today})
+                terminate
 } else {
-	var year = ${year.RESULT}
+                var year = ${year.RESULT}
 }
-
 match day "^[0-9]{6}([0-9]{2})" ${tomorrow}
 if (${day.STATUS} != MATCH) {
-	print Could not extract day from the supplied date (${tomorrow})
-	terminate
+                print Could not extract day from the supplied date (${tomorrow})
+                terminate
 } else {
-	var tomorrow_day = ${day.RESULT}
+                var tomorrow_day = ${day.RESULT}
 }
-
 match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${tomorrow}
 if (${day.STATUS} != MATCH) {
-	print Could not extract month from the supplied date (${tomorrow})
-	terminate
+                print Could not extract month from the supplied date (${tomorrow})
+                terminate
 } else {
-	var tomorrow_month = ${month.RESULT}
+                var tomorrow_month = ${month.RESULT}
 }
-
 match year "^([0-9]{4})[0-9]{4}" ${tomorrow}
 if (${year.STATUS} != MATCH) {
-	print Could not extract year from the supplied date (${tomorrow})
-	terminate
+                print Could not extract year from the supplied date (${tomorrow})
+                terminate
 } else {
-	var tomorrow_year = ${year.RESULT}
+                var tomorrow_year = ${year.RESULT}
 }
 
 #=================  End Date Formatting ==================#
 
-print Retrieving Azure usage data
+# Set some variables to facilitate running for 
+# multiple days within a single month.
+var date_diff = ${tomorrow_day}
+var date_diff -= ${day}
+var next_day = ${day}
 
+if (${month} != ${tomorrow_month}) {
+
+  get_last_day_of ${year}${month} as lastday
+  #var tomorrow_day = 01
+  
+  var date_diff = ${lastday}
+  if (${lastday} == ${day}) { 
+     var next_day = 00
+  }
+  else {
+    var next_day = ${day}
+  }
+  var date_diff -= ${day}
+  var date_diff += ${tomorrow_day}
+  var tomorrow_month = ${month}
+  var month_flag = "yes"
+  if (${year} != ${tomorrow_year}) {
+	var tomorrow_year = ${year}
+	var year_flag = "yes"
+  }
+  else {
+   var tomorrow_year = ${year}
+   var year_flag = "no" 
+  }
+} else {
+  var lastday = ${day}
+  var month_flag = "no"
+  var year_flag = "no" 
+}
+
+
+loop date_range ${date_diff} {
+  
+  if ((${day} == ${lastday}) && (${month_flag} == "yes") && (${tomorrow_month} != 12)){
+  var next_day = 00
+  var usage_export_file = "${exportdir}/${year}${month}${day}_ea_usage.csv"
+  var tomorrow_month += 1
+  }
+  if ((${day} == ${lastday}) && (${month_flag} == "yes") && (${tomorrow_month} == 12)){
+  var next_day = 00
+  var usage_export_file = "${exportdir}/${year}${month}${day}_ea_usage.csv"
+  var tomorrow_month = 01
+  var tomorrow_year += 1
+  }
+  if ((${day} > ${lastday}) && (${month_flag} == "yes")) {
+  var next_day = 01
+  var day = 01
+  var month2 = ${tomorrow_month}
+  var month = ${tomorrow_month}
+  
+  if (${year_flag} == "yes") {
+  var year = ${tomorrow_year}
+  }
+
+  var usage_export_file = "${exportdir}/${year}${month2}${day}_ea_usage.csv"
+  
+  } else {
+  var usage_export_file = "${exportdir}/${year}${month}${day}_ea_usage.csv"
+  }
+
+  csv "usage" = ${usage_export_file}
+  csv add_headers "usage" ServiceName ServiceTier Location ChargesBilledSeparately PartNumber ResourceGuid OfferId Cost AccountId ProductId ResourceLocationId ConsumedServiceId DepartmentId
+  csv add_headers "usage" AccountOwnerEmail AccountName ServiceAdministratorId SubscriptionId SubscriptionGuid SubscriptionName Date Product MeterId MeterCategory MeterSubCategory MeterRegion MeterName
+  csv add_headers "usage" ConsumedQuantity ResourceRate ResourceLocation ConsumedService InstanceId ServiceInfo1 ServiceInfo2 Tags StoreServiceIdentifier DepartmentName CostCenter UnitOfMeasure ResourceGroup
+  csv fix_headers "usage"
+
+var next_day += 1
+
+  var start_time = ${year}-${month}-${day}
+  var end_time = ${tomorrow_year}-${tomorrow_month}-${next_day}
+
+ # print This is the StartDate:  ${start_time} This is the EndDate: ${end_time} This is the export file: ${usage_export_file}
+
+#print Retrieving Azure usage data
 # Set up the HTTP request parameters
-set http_header "Authorization: Bearer ${EA_secret}"	
-buffer usage = http get "https://consumption.azure.com/v2/enrollments/${EA_enrollment}/usagedetails/download?startTime=${year}-${month}-${day}&endTime=${tomorrow_year}-${tomorrow_month}-${tomorrow_day}"
-save {usage} as ${usage_export_file}
-discard {usage}
+clear http_headers
+set http_header "Authorization: Bearer ${EA_secret}"   
+set http_savefile "${exportdir}/json/http_savefile_${start_time}.json"
+buffer usageItems = http get "https://consumption.azure.com/v3/enrollments/${EA_enrollment}/usagedetailsbycustomdate?startTime=${start_time}&endTime=${end_time}"
+ 
+ loop usage_loop {
+ 
+  foreach $JSON{usageItems}.[data] as this_lineItem {
 
-Print Succesfully retrieved Azure data!
+    csv write_field usage $JSON(this_lineItem).[serviceName]
+    csv write_field usage $JSON(this_lineItem).[serviceTier]
+    csv write_field usage $JSON(this_lineItem).[location]
+    csv write_field usage $JSON(this_lineItem).[chargesBilledSeparately]
+    csv write_field usage $JSON(this_lineItem).[partNumber]
+    csv write_field usage $JSON(this_lineItem).[resourceGuid]
+    csv write_field usage $JSON(this_lineItem).[offerId]
+    csv write_field usage $JSON(this_lineItem).[cost]
+    csv write_field usage $JSON(this_lineItem).[accountId]
+    csv write_field usage $JSON(this_lineItem).[productId]
+    csv write_field usage $JSON(this_lineItem).[resourceLocationId]
+    csv write_field usage $JSON(this_lineItem).[consumedServiceId]
+    csv write_field usage $JSON(this_lineItem).[departmentId]
+    csv write_field usage $JSON(this_lineItem).[accountOwnerEmail]
+    csv write_field usage $JSON(this_lineItem).[accountName]
+    csv write_field usage $JSON(this_lineItem).[serviceAdministratorId]
+    csv write_field usage $JSON(this_lineItem).[subscriptionId]
+    csv write_field usage $JSON(this_lineItem).[subscriptionGuid]
+    csv write_field usage $JSON(this_lineItem).[subscriptionName]
+    csv write_field usage $JSON(this_lineItem).[date]
+    csv write_field usage $JSON(this_lineItem).[product]
+    csv write_field usage $JSON(this_lineItem).[meterId]
+    csv write_field usage $JSON(this_lineItem).[meterCategory]
+    csv write_field usage $JSON(this_lineItem).[meterSubCategory]
+    csv write_field usage $JSON(this_lineItem).[meterRegion]
+    csv write_field usage $JSON(this_lineItem).[meterName]
+    csv write_field usage $JSON(this_lineItem).[consumedQuantity]
+    csv write_field usage $JSON(this_lineItem).[resourceRate]
+    csv write_field usage $JSON(this_lineItem).[resourceLocation]
+    csv write_field usage $JSON(this_lineItem).[consumedService]
+    csv write_field usage $JSON(this_lineItem).[instanceId]
+    csv write_field usage $JSON(this_lineItem).[serviceInfo1]
+    csv write_field usage $JSON(this_lineItem).[serviceInfo2]
+    csv write_field usage $JSON(this_lineItem).[tags]
+    csv write_field usage $JSON(this_lineItem).[storeServiceIdentifier]
+    csv write_field usage $JSON(this_lineItem).[departmentName]
+    csv write_field usage $JSON(this_lineItem).[costCenter]
+    csv write_field usage $JSON(this_lineItem).[unitOfMeasure]
+    csv write_field usage $JSON(this_lineItem).[resourceGroup]
 
+    }
+
+
+    var next_link = $JSON{usageItems}.[nextLink]
+    # print next_link
+    # skip if we don't have a next_link
+    if ("${next_link}" == "null") {
+   #  print "no next link, we can finish."
+    exit_loop
+    }
+discard {usageItems}
+# print Next link is: ${next_link}
+
+clear http_headers
+set http_header "Authorization: Bearer ${EA_secret}"   
+buffer usageItems = http get "${next_link}"
+ 
+
+}
+csv close "usage"
+#print Data retrieved
+
+  var day += 1
+#print Looping again!
+}

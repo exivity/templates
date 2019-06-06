@@ -1,43 +1,48 @@
-option loglevel = INFO
+# Set run time options
+option loglevel = DEBUGX
 option overwrite = NO
-# make sure to point this to the directory where the Extractor writes its files
-import "system/extracted/AzureEA/${dataDate}_ea_usage.csv" source azure alias ea options {
-  skip = 2
+option embed = yes
+# Make sure to point this to the directory where the Extractor writes its files
+import "system/extracted/AzureEA/${dataDate}_ea_usage.csv" source azure alias ea  options {
+  filter = (["Date"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/)
 }
-
-# normalise column headers
-rename column "Subscription Name" to "Subscription Name"
+# Normalise column headers
+rename column "SubscriptionName" to "Subscription Name"
 rename column "ResourceGroup" to "Resource Group"
-lowercase values in column "Resource Group"  
-# rename column "InstanceId" to "InstanceId"
+lowercase values in column "Resource Group" 
 rename column "CostCenter" to "Cost Center"
 rename column "UnitOfMeasure" to "unit"
 rename column "ConsumedQuantity" to "quantity"
 rename column "ResourceRate" to "rate"
-
-# When using non-English Azure, more columns require renaming 
-#
-# rename column "MeterCategory" to "MeterCategory"
-# rename column "MeterSubCategory" to "MeterSubCategory" 	
-# rename column "Product" to "Product"
-# rename column "MeterId" to "MeterId"
-
 # Obtain the Resource
 create mergedcolumn Resource from "InstanceId" /^.*\/(.*)$/
-lowercase values in column "Resource" 
-
+lowercase values in column "Resource"
+# ==================== Get Tags ==================== #
+# The following RegEx template can be used to 
+# obtain any named Tag from the Azure EA usage data.
+# ================================================== #
+create mergedcolumn COSTCODE from "Tags" /.*"COSTCODE": "([^"]+)".*/
+create mergedcolumn PROJ from Tags /.*"PROJ": "([^"]+)".*/
+delete column Tags
+# create mergedcolumn APP from "Tags" /.*""APP"": ""([^"]+)"".*/
+# create mergedcolumn APPCONTACT from "Tags" /.*""APPCONTACT"": ""([^"]+)"".*/
+# create mergedcolumn STATUS from "Tags" /.*""STATUS"": ""([^"]+)"".*/
+# create mergedcolumn DEPT from "Tags" /.*""DEPT"": ""([^"]+)"".*/
+# create mergedcolumn ENV from "Tags" /.*""ENV"": ""([^"]+)"".*/
+#================================================== #
 # Set values where empty
 set "Resource" to "Not Applicable"
 set "Cost Center" to "Not Assigned"
 set "InstanceId" to "Not Assigned"
+set "PROJ" to "Not Assigned"
+set "COSTCODE" to "Not Assigned"
 set "Resource Group" to "Not Assigned"
 create column interval value "individually"
-
-# uncomment the below statement for troubleshooting
-# export azure.ea as azure_out.csv
+# Uncomment the below statement for troubleshooting
+# export azure.ea as ${dataDate}azureEA_out.csv
 
 finish
-
+# option services = overwrite
 services {
   effective_date = 20180101
   service_type = automatic
@@ -50,4 +55,3 @@ services {
   unit_label_col = unit # the column containing the unit label
   consumption_col = quantity # the column containing the consumed quantity
 }
-
