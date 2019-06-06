@@ -1,0 +1,159 @@
+# vCenter Transformer
+
+# Transformer vCenter
+
+#
+# Import vCenter data
+#
+
+import "system/extracted/VC65/${dataDate}_.*_vm_inventory.csv" source vcenter alias inventoryVM_CPU options {
+    pattern enabled
+    exclude memory_size_MiB
+    filter ( [power_state] == "POWERED_ON" ) # Only taking into account VMs that are Powered On
+}
+
+import "system/extracted/VC65/${dataDate}_.*_vm_inventory.csv" source vcenter alias inventoryVM_Memory options {
+    pattern enabled
+    exclude cpu_count
+    filter ( [power_state] == "POWERED_ON" ) # Only taking into account VMs that are Powered On
+}
+
+import "system/extracted/VC65/${dataDate}_.*_vm_inventory.csv" source vcenter alias inventoryVM_Disk options {
+    pattern enabled
+    exclude memory_size_MiB cpu_count
+}
+
+import "system/extracted/VC65/${dataDate}_.*_vm_info.csv" source vcenter alias infoVM options {
+    pattern enabled
+}
+
+import "system/extracted/VC65/${dataDate}_.*_cluster_tags.csv" source vcenter alias clustertags options {
+    pattern enabled
+}
+import "system/extracted/VC65/${dataDate}_.*_object_tags.csv" source vcenter alias objecttags options {
+    pattern enabled
+}
+
+# Correlating ObjectTags with their name and description from ClusterTags
+default dset vcenter.clustertags
+rename column name to tagvalue
+#create mergedcolumn tags separator : from category_name tagvalue
+rename column description to tagdescription
+default dset vcenter.objecttags
+rename column id to vmid
+correlate tagvalue tagdescription category_name using tagid assuming vcenter.clustertags
+
+### Uncomment these section to apply tags 
+# Move Cost Center tags to a different data set
+#where ( [category_name] == "Cost.center") {  # Change it for the desired tag name
+# move rows to tag.costcenter
+#}
+### End of Tags section
+
+## VM Info ##
+default dset vcenter.infoVM
+# Aggregating records and sum total disk capacity
+aggregate notime vmid match name match Disk_Capacity sum
+
+### VM Disk ###
+default dset vcenter.inventoryVM_Disk
+# Correlating OS_Type and Disk_Capacity from infoVM
+correlate Disk_Capacity using vmid assuming vcenter.infoVM
+
+### Uncomment these section to apply tags 
+# Correlate costcenter with vmid
+#correlate tagvalue using vmid assuming tag.costcenter
+#rename column tagvalue to "Cost Center"
+#option overwrite = no
+#set "Cost Center" to "Not Assigned"
+### End of Tags section
+
+# Normalising
+rename column name to instance
+lowercase values in column instance
+rename column Disk_Capacity to UsageQuantity
+create column service_name value "vCenter Disk"
+create column service_desc value "vCenter Disk"
+create column type_col value "vCenter Consumption Disk"
+create column Units value "GB"
+# Final normalising
+create column Cogs value 0
+create column Rate value 0.01 # Change for desired Rate
+# Deleting unnecesary columns
+delete columns memory_size_MiB memory_size_GB cpu_count power_state cluster_name
+
+### VM CPU ###
+default dset vcenter.inventoryVM_CPU
+# Correlate costcenter with vmid
+correlate tagvalue using vmid assuming tag.costcenter
+rename column tagvalue to "Cost Center"
+option overwrite = no
+set "Cost Center" to "Not Assigned"
+
+# Normalising
+rename column name to instance
+lowercase values in column instance
+rename column cpu_count to UsageQuantity
+create column service_name value "vCenter CPU"
+create column service_desc value "vCenter CPU"
+create column type_col value "vCenter Consumption CPU"
+create column Units value "vCPU"
+# Final normalising
+create column Cogs value 0
+create column Rate value 0.5 # Change for desired Rate
+# Deleting unnecesary columns
+delete columns memory_size_MiB memory_size_GB cpu_count power_state cluster_name
+
+### VM Memory ###
+default dset vcenter.inventoryVM_Memory
+# Correlate costcenter with vmid
+correlate tagvalue using vmid assuming tag.costcenter
+rename column tagvalue to "Cost Center"
+option overwrite = no
+set "Cost Center" to "Not Assigned"
+
+# Normalising
+rename column name to instance
+lowercase values in column instance
+calculate column UsageQuantity as column memory_size_MiB / value 1024
+create column service_name value "vCenter Memory"
+create column service_desc value "vCenter Memory"
+create column type_col value "vCenter Consumption Memory"
+create column Units value "GB"
+# Final normalising
+create column Cogs value 0
+create column Rate value 0.1 # Change for desired Rate
+# Deleting unnecesary columns
+delete columns memory_size_MiB memory_size_GB cpu_count power_state cluster_name
+
+# Appending all datasets
+default dset vcenter.inventoryVM_CPU
+append vcenter.inventoryVM_Memory to vcenter.inventoryVM_CPU
+append vcenter.inventoryVM_Disk to vcenter.inventoryVM_CPU
+
+# Exporting Billing master data
+default dset vcenter.inventoryVM_CPU
+export vcenter.inventoryVM_CPU as "vCenter/Billing/${dataDate}_vCenter.csv"
+
+# Export Exceptions for troubleshooting
+#export vcenter.EXCEPTIONS as "vCenter/Exceptions/${dataDate}_vCenter_Exceptions.csv"
+
+finish
+
+# option services = overwrite
+
+services {
+  effective_date = 20180901
+  service_type = automatic
+  description_col = service_name # column name
+  category_col = type_col # column with category value
+  instance_col = instance # the unique instance i.e. vm-id, username, etc
+  usages_col = service_desc # the column containing the name of the consumed service
+  set_rate_using = Rate
+  #set_fixed_price_using = node_fee
+  #set_cogs_using = Cogs # the column containing the CoG rate values
+  # cogs_col = BlendedRate # the column containing the CoG rate values
+  interval = individually
+  unit_label_col = Units # the column containing the unit label
+  consumption_col = UsageQuantity # the column containing the consumed quantity
+}

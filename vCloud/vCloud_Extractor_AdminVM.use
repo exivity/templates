@@ -1,0 +1,283 @@
+#==================== Configuration ====================#
+#
+# Template USE Extractor for obtaining VM's data from vCloud API 29.0 and higher
+#
+
+loglevel DEBUGX # adjust log detail to: DEBUG, INFO, WARN 
+
+if (${ARGC} == 0 ) {    # today & now
+  var Date = "${YEAR}${MONTH}${DAY}"
+  var Hour = ${HOUR}
+}
+if (${ARGC} == 1 ) {    # that date & now
+  var Date = ${ARG_1}
+  var Hour = ${HOUR}
+}
+if (${ARGC} == 2 ) {    # today & now
+  var Date = ${ARG_1}
+  var Hour = ${ARG_2}
+}
+if (${Date} == ${Hour} ) {
+  var Hour = ${HOUR}
+}
+
+# API used
+#var API_Name = "vm"
+var API_Name = "adminVM"
+var version = "31.0" # check your API version
+
+public var host = "your-vcloud-portal-ip"
+public var username = "username@system" # with @system to indicate the highest org in the hierarchy
+public var password = "your-vcloud-password"
+public var exportdir = "system/extracted/vmWare"  # make sure this directory exists!
+public var usage_export_file = "${exportdir}/${API_Name}/${Date}_vCloud.csv"
+# directory should exist!
+
+#================= Authorization section start =========#
+var login = "${username}:${password}"
+encode base64 login
+print "Authorization started."
+# Set up the HTTPS request parameters
+clear http_headers
+# set http_header "Accept: application/*+xml;version=${version}" 
+set http_header "Accept: application/*;version=${version}" 
+set http_header "Authorization: Basic ${login}"	
+buffer token = http POST "${host}/api/sessions"
+
+    if ( "${HTTP_STATUS_CODE}" != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        print {token}
+    }
+
+ http get_header "x-vcloud-authorization" as vcloud_auth 
+# http get_header "X-VMWARE-VCLOUD-ACCESS-TOKEN" as vcloud_auth
+print ${vcloud_auth}
+#set http_savefile "system/extracted/vmWare/session.json"
+# Alternative:
+#http get_header "x-vcloud-authorization" as vcloud_auth 
+print "Authorization completed."
+#discard {token}
+#================= Authorization section end ============#
+
+# ===== CSV file structure start =====#
+csv API_OUT = "${usage_export_file}"
+csv add_headers API_OUT "vmName" "vmVAppName" "vmVAppId" "vmNetworkName" "vmCatalogName" "isVAppTemplate" "vmHostName" "storageProfileName" "power_state" "guestOs" "vdcHref" "vdcName" "vcloud_id" "org_id" "org_name" "ipAddress" "StorageProfile" "VirtualMachineId" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "numCPUs" "RamMB"
+csv fix_headers API_OUT
+# ===== CSV file structure end =====#	
+
+# ======= Paging section start
+var page_size = 25 # Max number of records per page
+var page = 0 # Start page, do not change
+var counter = 10000 # Max number of pages, set to null for unlimited
+# ======= Paging section end
+
+# Main loop start		
+loop paging "${counter}" {
+    clear http_headers
+    var page += 1
+	
+	# Set up the HTTPS request parameters
+    set http_header "Accept: application/*;version=${version}" 
+	#set http_header "Accept: application/*+xml;version=${version}"
+	set http_header "x-vcloud-authorization: ${vcloud_auth}"
+    set http_savefile "system/extracted/vmWare/queries${page}.json"
+    buffer token_vm = http GET "${host}/api/query?type=${API_Name}&format=records&pageSize=${page_size}&page=${page}"
+   # print {token_vm}
+ #   print close
+    #buffer token = http GET "${host}/api/query"
+    #set http_savefile "system/extracted/vmWare/orgs${page}.json"
+    #buffer token_org = http GET "${host}/api/org"
+    if ("${HTTP_STATUS_CODE}" != 200) {
+	#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+    #    print {token_vm}
+		if ("${page}" > 1) {
+		    print "Success: Exiting - last page reached."
+		}
+		else {
+		 print "Error: No data received from server." 
+         print print {token_vm}
+		}
+		discard {token_vm}
+		csv close "API_OUT"
+		terminate
+	}
+  	foreach $XML{token_vm}.[QueryResultRecords] as this_record {
+	    # ===== CSV variables section	start
+        var vmName = "EXIVITY_NOT_FOUND"
+        var vmVAppName = "EXIVITY_NOT_FOUND"
+        var vmVAppId = "EXIVITY_NOT_FOUND"
+        var vmNetworkName = "EXIVITY_NOT_FOUND"
+        var vmCatalogName = "EXIVITY_NOT_FOUND"
+        var isVAppTemplate = "EXIVITY_NOT_FOUND"
+        var vmHostName = "EXIVITY_NOT_FOUND"
+        var storageProfileName = "EXIVITY_NOT_FOUND"
+        var status = "EXIVITY_NOT_FOUND"
+        var guestOS = "EXIVITY_NOT_FOUND"
+        var vdcHref = "EXIVITY_NOT_FOUND"
+        var vCloudId = "EXIVITY_NOT_FOUND"
+        var ipAddress = "EXIVITY_NOT_FOUND"
+        var storageProfile = "EXIVITY_NOT_FOUND"
+        var virtualMachineId = "EXIVITY_NOT_FOUND"
+        var vmOrgName = "EXIVITY_NOT_FOUND"
+        var snapShotSize = "EXIVITY_NOT_FOUND"
+        var hardDiskName = "EXIVITY_NOT_FOUND"
+        var HDStorageProfile = "EXIVITY_NOT_FOUND"
+        var allocatedDiskSizeValue = "EXIVITY_NOT_FOUND"
+        var memoryMB = "EXIVITY_NOT_FOUND"
+        var numberOfCpus = "EXIVITY_NOT_FOUND"
+        # ===== CSV variables section	end
+
+        var check = $XML(this_record).[@container]
+        if ("${check}" != "EXIVITY_NOT_FOUND") {
+            var vmCatalogName = $XML(this_record).[@catalogName]
+            var vmDataStoreName = $XML(this_record).[@datastoreName]
+            var guestOS = $XML(this_record).[@guestOs]
+            var vmHostName = $XML(this_record).[@hostName]
+            var isVAppTemplate = $XML(this_record).[@isVAppTemplate]
+            var memoryMB = $XML(this_record).[@memoryMB]
+            var numberOfCpus = $XML(this_record).[@numberOfCpus]
+            var vmOrgId = $XML(this_record).[@org]
+            var status = $XML(this_record).[@status]
+            var storageProfileName = $XML(this_record).[@storageProfileName]
+            var vmName = $XML(this_record).[@name]
+            var vmNetworkName = $XML(this_record).[@networkName]
+            var vmId = $XML(this_record).[@moref]
+            var vdcHref = $XML(this_record).[@vdc]
+            var vmVAppName = $XML(this_record).[@containerName]
+            var vmVAppId = $XML(this_record).[@container]
+            var virtualMachineId = $XML(this_record).[@href]
+    
+            # +++++ Get ORG name +++++ #
+
+            clear http_headers
+            set http_header "Accept:application/*+xml;version=${version}"
+	        set http_header "X-vcloud-authorization: ${vcloud_auth}"           
+            buffer this_org_record = http GET "${vmOrgId}"
+            #print {this_org_record}
+            #print finish
+            foreach $XML{this_org_record}.[Org] as this_org {
+              #print $XML(this_org)
+              var vmOrgName = $XML(this_org)
+            }
+            discard {this_org_record}
+            #print ${vmOrgName}
+
+		    # +++++ Get VDC name +++++ #
+
+            clear http_headers
+            set http_header "Accept:application/*+xml;version=${version}"
+	        set http_header "X-vcloud-authorization: ${vcloud_auth}"           
+            buffer this_vdc_record = http GET "${vmOrgId}"
+            #print {this_org_record}
+            #print finish
+            foreach $XML{this_vdc_record}.[Org] as this_vdc {
+              #print $XML(this_org)
+              var vdcName = $XML(this_vdc)
+            }
+            discard {this_vdc_record}
+            # ===== vAPP section  start =====#
+            clear http_headers
+            set http_header "Accept:application/*+xml;version=${version}"
+	        set http_header "X-vcloud-authorization: ${vcloud_auth}"
+	        #set http_savefile  "${exportdir}/adminVM/XML/vAPP.xml"
+            # ===== Filter out templates start =====#
+            if (("${isVAppTemplate}" != "true") || ("${isVAppTemplate}" == "true")) {    
+                #var URL_temp = "$XML(this_record).[@container]"
+                var URL_temp = "$XML(this_record).[@href]"
+                clear http_headers
+                set http_header "Accept:application/*+xml;version=${version}"
+	            set http_header "X-vcloud-authorization: ${vcloud_auth}"
+                set http_savefile  "${exportdir}/adminVM/XML/${vmName}.xml"
+                buffer this_vapp_record = http GET "${URL_temp}"
+                
+                clear http_headers
+                set http_header "Accept:application/*+xml;version=${version}"
+	            set http_header "X-vcloud-authorization: ${vcloud_auth}"
+                set http_savefile  "${exportdir}/adminVM/XML/${vmName}_meta.xml"
+                buffer this_meta_record = http GET "${virtualMachineId}/metadata"
+                            if (${HTTP_STATUS_CODE} != 200) {
+							print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+							print ${vmVAppId}
+                            }
+                            
+                var check = $XML{this_vapp_record}.[Children].[Vm].[StorageProfile].[@name]
+                if ("${check.LENGTH}" > 0) {
+                    if ("${check}" != "EXIVITY_NOT_FOUND") {
+                        var storageProfile = "${check}"
+                        #print "storageProfile:${storageProfile}"
+                    }
+                }
+                #print $XML{this_meta_record}
+                discard {this_meta_record}
+                var check = $XML{this_vapp_record}.[VirtualHardwareSection].[Item].[Connection].[@ipAddress]
+                if ("${check.LENGTH}" > 0) {
+                    if ("${check}" != "EXIVITY_NOT_FOUND") {
+                        var ipAddress = "${check}"
+                        #print "ipAddress: ${ipAddress}"
+                    }
+                }
+                # Hard Disk section here 
+                foreach $XML{this_vapp_record}.[Children].[Vm].[VirtualHardwareSection] as hdd_rec {
+                    var check = $XML(hdd_rec).[Description]
+                    if ("${check.LENGTH}" > 0) {
+                        escape quotes in check
+                        if ("${check}" == "Hard disk") {
+                            var hardDiskName = $XML(hdd_rec).[ElementName]
+                            var HDStorageProfile = $XML(hdd_rec).[HostResource].[@storageProfileHref]
+                            var allocatedDiskSizeValue = $XML(hdd_rec).[VirtualQuantity] # capacity in bytes
+                            var allocatedDiskSizeValue = (${allocatedDiskSizeValue} / 1024) # convert to KB
+                            var allocatedDiskSizeValue = (${allocatedDiskSizeValue} / 1024) # convert to MB
+                            var allocatedDiskSizeValue = (${allocatedDiskSizeValue} / 1024) # convert to GB
+                            #var diskID = $XML(hdd_rec).[InstanceID]
+                            clear http_headers
+                            set http_header "Accept:application/*+xml;version=${version}"
+	                        set http_header "X-vcloud-authorization: ${vcloud_auth}"
+                            set http_savefile  "${exportdir}/adminVM/XML/${vmName}_disk.xml"
+                            buffer this_disk_record = http GET "${HDStorageProfile}/metadata"
+                            if (${HTTP_STATUS_CODE} != 200) {
+							print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+                            print ${HDStorageProfile}
+							#print diskid:${diskID}
+                            }
+                            
+                            # ===== Writing CSV record
+                            csv write_field "API_OUT" ${vmName}
+                            csv write_field "API_OUT" ${vmVAppName}
+                            csv write_field "API_OUT" ${vmVAppId}
+                            csv write_field "API_OUT" ${vmNetworkName}
+                            csv write_field "API_OUT" ${vmCatalogName}
+                            csv write_field "API_OUT" ${isVAppTemplate}
+                            csv write_field "API_OUT" ${vmHostName}
+                            csv write_field "API_OUT" ${storageProfileName}
+                            csv write_field "API_OUT" ${status}
+                            csv write_field "API_OUT" ${guestOS}
+                            csv write_field "API_OUT" ${vdcHref}
+							csv write_field "API_OUT" ${vdcName}
+                            csv write_field "API_OUT" ${vCloudId}
+                            csv write_field "API_OUT" ${vmOrgId}
+                            csv write_field "API_OUT" ${vmOrgName}
+                            csv write_field "API_OUT" ${ipAddress}
+                            csv write_field "API_OUT" ${storageProfile}
+                            csv write_field "API_OUT" ${virtualMachineId}
+                            csv write_field "API_OUT" ${hardDiskName}
+                            csv write_field "API_OUT" ${HDStorageProfile}
+                            csv write_field "API_OUT" ${allocatedDiskSizeValue}
+                            csv write_field "API_OUT" ${numberOfCpus}
+                            csv write_field "API_OUT" ${memoryMB}
+                        }
+                    }
+                }    
+            discard {this_vapp_record}
+            }
+        }
+        
+      
+      # ===== Filter out templates end =====#
+	}
+  
+
+#	=============== AdminVM section end =======================#
+}
+clear http_headers
+discard {token_vm}
+csv close "API_OUT"

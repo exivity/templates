@@ -8,6 +8,7 @@
 # - Folders
 # - Data stores
 # - Clusters
+# - VM Tags
 #
 # All is written to date/time aware CSV files. These files
 # can be imported in any Transformer for further handling
@@ -18,26 +19,31 @@
 loglevel DEBUGX # adjust log detail to: DEBUG, INFO, WARN 
 
 # Change this value to your local vCenter hostname or IP address
-public var vcenter = "< your local vCenter hostname or IP address >"
+public var vcenter = "vcenter-hostname"
 # Change this value to your local vCenter TCP Port
-public var tcpport = "< your local vCenter TCP Port >"
+public var tcpport = "443"
 # Username that is allowed to call the vCenter REST API
-public var username = "< vCenter Username >"
+public var username = "username"
 # Password for the username to call the vCenter REST API
-public var password = < vCenter Password >
+public var password = "password"
 
 var JSON_dir = "system/extracted/VC65/json" # directory should exist
 var CSV_dir = "system/extracted/VC65" # directory should exist
 var clusterJSON = "${JSON_dir}/vcenter_cluster.json"
 var dcJSON = "${JSON_dir}/vcenter_dc.json"
 var dsJSON = "${JSON_dir}/vcenter_ds.json"
+var tagsJSON = "${JSON_dir}/vcenter_tags.json"
+var obtagsJSON = "${JSON_dir}/objects_tags.json"
 var folderJSON = "${JSON_dir}/vcenter_folder.json"
-var dc_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_dc_inventory.csv" 
-var folder_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_folder_inventory.csv" 
-var datastore_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_datastore_inventory.csv" 
-var cluster_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_cluster_inventory.csv" 
-var vm_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_vm_inventory.csv" 
-var vm_info_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${vcenter}_vm_info.csv"
+var dc_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_dc_inventory.csv" 
+var folder_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_folder_inventory.csv"
+var folder_info_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_folder_info.csv"  
+var datastore_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_datastore_inventory.csv" 
+var cluster_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_cluster_inventory.csv" 
+var vm_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_vm_inventory.csv" 
+var vm_info_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_vm_info.csv"
+var cluster_tags_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_cluster_tags.csv" 
+var object_tags_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_object_tags.csv" 
 
 #
 #=================  End Configuration ==================#
@@ -63,7 +69,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 
 # save the access token
 var access_token = $JSON{token}.[value]
-print ${access_token}
+#print ${access_token}
 discard {token}
 
 # Definition of the csv files
@@ -79,6 +85,10 @@ csv "folder_details" = ${folder_details_export_file}
 csv add_headers "folder_details" datacenter folder type name 
 csv fix_headers "folder_details"
 
+csv "folder_info" = ${folder_info_export_file}
+csv add_headers "folder_info" vmid name folder foldername 
+csv fix_headers "folder_info"
+
 csv "cluster_details" = ${cluster_details_export_file}
 csv add_headers "cluster_details" datacenter cluster name 
 csv fix_headers "cluster_details"
@@ -91,20 +101,113 @@ csv "vm_info" = ${vm_info_export_file}
 csv add_headers "vm_info" vmid name memory_size_MiB cpu_count OS_Type Disk Disk_Capacity DataStore power_state cluster_name
 csv fix_headers "vm_info"
 
+csv "cluster_tags" = ${cluster_tags_export_file}
+csv add_headers "cluster_tags" category_id description tagid name category_name
+csv fix_headers "cluster_tags"
+
+csv "object_tags" = ${object_tags_export_file}
+csv add_headers "object_tags" tagid id type
+csv fix_headers "object_tags"
+
 # End of definition of the csv files
 
+# Get all tags
+clear http_headers
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${tagsJSON}
+#print Getting All Tags JSON
+buffer tags = http GET "https://${vcenter}:${tcpport}/rest/com/vmware/cis/tagging/tag"
+if (${HTTP_STATUS_CODE} != 200) {
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
+	json format {tags} 
+#	print {clusters}
+#	print Exiting
+	terminate
+}
+
+# Loop through the cluster and save it in csv
+foreach $JSON{tags}.[value] as this_tag {
+var newTag = $JSON(this_tag)
+clear http_headers
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${tagsJSON}
+buffer taginfo = http GET "https://${vcenter}:${tcpport}/rest/com/vmware/cis/tagging/tag/id:${newTag}"
+if (${HTTP_STATUS_CODE} != 200) {
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
+	json format {taginfo} 
+#	print {clusters}
+#	print Exiting
+	terminate
+}
+#print {taginfo}
+foreach $JSON{taginfo} as this_taginfo {
+    #print $JSON(this_taginfo)
+	var category_id = $JSON(this_taginfo).[category_id]
+	csv write_field cluster_tags $JSON(this_taginfo).[category_id]
+	csv write_field cluster_tags $JSON(this_taginfo).[description]
+	csv write_field cluster_tags $JSON(this_taginfo).[id]
+	csv write_field cluster_tags $JSON(this_taginfo).[name]
+	clear http_headers
+	set http_header "vmware-api-session-id: ${access_token}"
+	set http_header "Content-Type: application/json"
+	buffer categoryinfo = http GET "https://${vcenter}:${tcpport}/rest/com/vmware/cis/tagging/category/id:${category_id}"
+	if (${HTTP_STATUS_CODE} != 200) {
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
+	json format {taginfo} 
+#	print {clusters}
+#	print Exiting
+	terminate
+	}
+	foreach $JSON{categoryinfo} as this_categoryinfo {
+	csv write_field cluster_tags $JSON(this_categoryinfo).[name]
+	}
+	discard {categoryinfo}
+}
+	discard {taginfo}
+clear http_headers
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${obtagsJSON}
+buffer taguser = http POST "https://${vcenter}:${tcpport}/rest/com/vmware/cis/tagging/tag-association/id:${newTag}?~action=list-attached-objects"
+if (${HTTP_STATUS_CODE} != 200) {
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
+	json format {taguser} 
+#	print {clusters}
+#	print Exiting
+	terminate
+}
+#print {taguser}
+foreach $JSON{taguser}.[value] as this_taguser {
+    csv write_field object_tags ${newTag}
+	csv write_field object_tags $JSON(this_taguser).[id]
+	csv write_field object_tags $JSON(this_taguser).[type]
+}
+	discard {taguser}
+}
+
+discard {tags}
+csv close "cluster_tags"
+csv close "object_tags"
+
 # Get all dcs
+clear http_headers
 set http_header "vmware-api-session-id: ${access_token}"
 set http_header "Content-Type: application/json"
 set http_savefile ${dcJSON}
-print Getting All DC's JSON
+#print Getting All DC's JSON
 buffer datacenters = http GET "https://${vcenter}:${tcpport}/rest/vcenter/datacenter"
 if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
 	json format {datacenters} 
-	print {clusters}
-	print Exiting
+#	print {clusters}
+#	print Exiting
 	terminate
 }
 
@@ -127,14 +230,14 @@ clear http_headers
 set http_header "vmware-api-session-id: ${access_token}"
 set http_header "Content-Type: application/json"
 set http_savefile ${dsJSON}
-print Getting All DataStore's JSON
+#print Getting All DataStore's JSON
 buffer datastores = http GET "https://${vcenter}:${tcpport}/rest/vcenter/datastore?filter.datacenters=${dcName}"
 if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
 	json format {datastores} 
-	print {datastores}
-	print Exiting
+#	print {datastores}
+#	print Exiting
 	terminate
 }
 
@@ -155,14 +258,14 @@ clear http_headers
 set http_header "vmware-api-session-id: ${access_token}"
 set http_header "Content-Type: application/json"
 set http_savefile ${folderJSON}
-print Getting All Folders's JSON
+#print Getting All Folders's JSON
 buffer folders = http GET "https://${vcenter}:${tcpport}/rest/vcenter/folder?filter.datacenters=${dcName}"
 if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
 	json format {folders} 
-	print {datastores}
-	print Exiting
+#	print {datastores}
+#	print Exiting
 	terminate
 }
 
@@ -176,19 +279,54 @@ foreach $JSON{folders}.[value] as this_folder {
 
 discard {folders}
 
+buffer folders = FILE "${folderJSON}"
+# Get all VM filtering by folder
+foreach $JSON{folders}.[value] as this_folder
+{
+
+var folder = $JSON(this_folder).[folder]
+var folderName = $JSON(this_folder).[name]
+clear http_headers
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${clusterJSON}
+#print Getting All Cluster's JSON
+buffer clusters = http GET "https://${vcenter}:${tcpport}/rest/vcenter/vm?filter.folders=${folder}"
+if (${HTTP_STATUS_CODE} != 200) {
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
+	json format {clusters} 
+#	print {clusters}
+#	print Exiting
+	terminate
+}
+
+# Loop through the cluster and save it in csv
+foreach $JSON{clusters}.[value] as this_cluster {
+	csv write_field folder_info $JSON(this_cluster).[vm]
+	csv write_field folder_info $JSON(this_cluster).[name]
+	csv write_field folder_info ${folder}
+	csv write_field folder_info ${folderName}
+}
+
+discard {clusters}
+
+}
+discard {folders}
+
 # Get all clusters filtering by dc
 clear http_headers
 set http_header "vmware-api-session-id: ${access_token}"
 set http_header "Content-Type: application/json"
 set http_savefile ${clusterJSON}
-print Getting All Cluster's JSON
+#print Getting All Cluster's JSON
 buffer clusters = http GET "https://${vcenter}:${tcpport}/rest/vcenter/cluster?filter.datacenters=${dcName}"
 if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
 	json format {clusters} 
-	print {clusters}
-	print Exiting
+#	print {clusters}
+#	print Exiting
 	terminate
 }
 
@@ -205,10 +343,11 @@ discard {clusters}
 csv close "cluster_details"
 csv close "datastore_details"
 csv close "folder_details"
+csv close "folder_info"
 discard {datacenters}
 
 # Getting basic info from all the VMs of each cluster
-print Getting All VM's from Cluster
+#print Getting All VM's from Cluster
 buffer clusters = FILE "${clusterJSON}"
 
 foreach $JSON{clusters}.[value] as this_cluster
@@ -225,11 +364,11 @@ set http_savefile ${vmsJSON}
 
 buffer vms = http GET "https://${vcenter}:${tcpport}/rest/vcenter/vm?filter.clusters=${clusterName}"
 if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
 	json format {vms} 
-	print {vms}
-	print Retrying
+#	print {vms}
+#	print Retrying
 	terminate
 }
 
@@ -246,7 +385,7 @@ foreach $JSON{vms}.[value] as this_vm {
 
 ### Getting more granular info for each VM of the cluster
 buffer clusterVM = FILE "${vmsJSON}"
-print Getting info for each VM in the cluster
+#print Getting info for each VM in the cluster
 
 foreach $JSON{clusterVM}.[value] as this_clusterVM
 {
@@ -260,11 +399,11 @@ set http_header "Content-Type: application/json"
 set http_savefile ${vmsInfoJSON}
 buffer VM = http GET "https://${vcenter}:${tcpport}/rest/vcenter/vm/${VM_ID}"
 if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
+#	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+#	print The server response was:
 	json format {VM} 
-	print {VM}
-	print Retrying
+#	print {VM}
+#	print Retrying
 	pause 1500
 }
 else {
@@ -279,8 +418,9 @@ else {
 			csv write_field vm_info $JSON{VM}.[value].[memory].[size_MiB]
 			csv write_field vm_info $JSON{VM}.[value].[cpu].[count]
 			var capacity = $JSON(this_VMDisk).[value].[capacity] # Capacity in bytes
-			var capacity /= 1024 # Convert capacity to KB
-			var capacity /= 1024 # Convert capacity to MB
+			var capacity = (${capacity} / 1024) # Convert capacity to KB
+			var capacity = (${capacity} / 1024) # Convert capacity to MB
+			var capacity = (${capacity} / 1024) # Convert capacity to GB
 			csv write_field vm_info $JSON{VM}.[value].[guest_OS]
 			csv write_field vm_info $JSON(this_VMDisk).[value].[label]
 			csv write_field vm_info ${capacity}
