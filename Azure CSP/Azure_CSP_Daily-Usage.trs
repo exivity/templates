@@ -6,47 +6,40 @@ option loglevel = DEBUGX
 import "system\extracted\AzureCSP\${dataDate}_csp_usage.csv" source azure alias csp_usage
 import "system\extracted\AzureCSP\${dataDate}_csp_customers.csv" source azure alias customers
 import "system\extracted\AzureCSP\${dataDate}_csp_subscriptions.csv" source azure alias subscriptions
-#
-# Import IUR usage from Azure CSP
-#
-import "system\extracted\AzureCSP\${dataDate}_csp_usage_IUR.csv" source azure alias csp_usage_IUR
-import "system\extracted\AzureCSP\${dataDate}_csp_subscriptions_IUR.csv" source azure alias subscriptions_IUR
 
 # import rates
 import "system\extracted\AzureCSP_rates\csp_rates_per_threshold.csv" source azure alias stack_rates
 
+if (@FILE_EXISTS("system\extracted\AzureCSP\${dataDate}_csp_usage_IUR.csv")) {
+# Import Daily IUR Usage
+import "system\extracted\AzureCSP\${dataDate}_csp_usage_IUR.csv" source azure alias csp_usageIUR
+# Import Daily IUR Subscriptions
+import "system\extracted\AzureCSP\${dataDate}_csp_subscriptions_IUR.csv" source azure alias subscriptionsIUR
+}
+
+# Appending IUR Usage&Subscriptions to Normal Usage&Subscriptions
+if (!@DSET_EMPTY(azure.csp_usageIUR)) {
+append azure.csp_usageIUR to azure.csp_usage
+append azure.subscriptionsIUR to azure.subscriptions
+}
 
 # obtain subscription names and normalise data
 rename column azure.customers.ID to customer_id
 rename column azure.customers.Name to customer_name
 rename column azure.stack_rates.meter_id to resource_id
-rename column azure.subscriptions.offerName to SubscriptionName
+rename column azure.subscriptions.offerName to subscriptionName
 capitalize values in columns azure.customers.customer_id
 capitalize values in columns azure.subscriptions.customer_id
 capitalize values in columns customer_id
 capitalize values in columns azure.subscriptions.subscription_id
 capitalize values in columns subscription_id
 
-if (!@DSET_EMPTY(azure.csp_usage_IUR)) {
-rename column azure.subscriptions_IUR.offerName to SubscriptionName
-default dset azure.csp_usage_IUR
-capitalize values in columns customer_id
-capitalize values in columns azure.subscriptions_IUR.customer_id
-capitalize values in columns azure.subscriptions_IUR.subscription_id
-capitalize values in columns subscription_id
-}
-
 # correlate data within datarate (names + rates)
 default dset azure.csp_usage
 correlate azure.customers.customer_name using customer_id
-correlate azure.subscriptions.SubscriptionName using subscription_id
-if (!@DSET_EMPTY(azure.csp_usage_IUR)) {
-default dset azure.csp_usage_IUR
-create column customer_name value "IUR" # Change for client name IUR
-correlate azure.subscriptions_IUR.SubscriptionName using subscription_id
-append azure.csp_usage_IUR to azure.csp_usage
-default dset azure.csp_usage
-}
+option overwrite = no
+set customer_name to "IUR" # CHANGE THIS LINE TO YOUR DESIRED IUR CUSTOMER NAME
+correlate azure.subscriptions.subscriptionName using subscription_id
 correlate azure.stack_rates.rate using resource_id
 correlate azure.stack_rates.meter_name azure.stack_rates.category azure.stack_rates.subcategory using resource_id
 delete columns resource_name resource_category resource_subcategory
@@ -56,8 +49,8 @@ rename column subcategory to resource_subcategory
 
 # Create Service Columns
 capitalize values in columns customer_id subscription_id customer_name resource_name region unit resource_category resource_subcategory
-create mergedcolumn service_name separator " - " from "resource_name" "resource_subcategory" "location" "region"
-create mergedcolumn service_key separator " " from "resource_id"
+create mergedcolumn service_name separator " - " from  "resource_name" "resource_subcategory" "location" "region"
+create mergedcolumn service_key separator " ${dataMonth}${dataYear} " from "subscription_id" "resource_id"
 
 # Extract ResourceGroup and ResourceName
 create mergedcolumn instance from resourceUri /.*\/(.*)$/
@@ -71,17 +64,17 @@ set rate to "0"
 #set cogs to "0"
 set unit to "Unit/Hours"
 create column interval value "individually"
-set resource_category to "Azure Stack Generic Resources"
+set resource_category to "Azure Generic Resources"
 
 # cleanup and final normalisation
-delete columns usageStartTime	usageEndTime resourceUri type partNumber orderNumber	objectType location offerId	offerName
+delete columns usageStartTime region	usageEndTime resourceUri type partNumber orderNumber	objectType location offerId	offerName
 
 # export data for troubleshooting
-export azure.csp_usage as "${dataDate}T1_CSP.csv"
+export azure.csp_usage as "AzureCSP/${dataDate}T1_CSP.csv"
 finish
-option services = overwrite
+#option services = overwrite
 services {
- effective_date = 20180802
+ effective_date = 20190101
 	service_type = automatic
 	description_col = service_name
 	category_col = resource_category

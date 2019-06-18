@@ -29,6 +29,14 @@ if (${ARGC} != 2)
 	var tomorrow = ${ARG_2}
 }
 
+if (${today} == ${tomorrow})
+{
+
+print The second argument must be at least one day more that the previous one
+terminate
+
+}
+
 # Validate the date formats
 match date "^([0-9]{8})$" ${today}
 if (${date.STATUS} != MATCH) {
@@ -139,14 +147,7 @@ clear http_headers
 # Get an AD token from login.windows.net
 # print "Getting AD Token"
 
-#set http_header "Content-Type: application/x-www-form-urlencoded"
-#set http_savefile "${json_filedir}/http_savefile.json"
-#buffer token = http GET "https://adminmanagement.zne002.mediapro.cloud/metadata/endpoints?api-version=2015-01-01"
-## print {token}
-
-
 # Set up the HTTP request parameters
-#set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https://adminmanagement.${MyDomain}"
 set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https://adminmanagement.${MyDomain}/${audience}"
 set http_header "Content-Type: application/x-www-form-urlencoded"
 set http_savefile "${json_filedir}/http_savefile.json"
@@ -159,13 +160,11 @@ if (${HTTP_STATUS_CODE} != 200) {
 	terminate
 }
 
-# print "Succesfully authenticated!"
+# print "Successfully authenticated!"
 
 # Create a variable called ${access_token} from the AD token in {token}
 var access_token = "$JSON{token}.[access_token]"
 var refresh_token = "$JSON{token}.[refresh_token]"
-## print "access token is ${access_token}"
-## print "refresh token is ${refresh_token}"
 discard {token}
 
 # Set some variables to facilitate running for 

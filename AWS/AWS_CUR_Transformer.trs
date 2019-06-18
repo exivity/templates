@@ -1,0 +1,252 @@
+option loglevel = INFO
+# import all CCMS-[0-9] data for column comparison
+# Current list of fields in the include option matches the defined data definition document of required fields.
+import system/extracted/aws/${dataYear}${dataMonth}/CCMS-[0-9]*\.csv source AWS_CUR alias usage1 options {
+pattern on
+filter = (["lineItem/UsageStartDate"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/)
+include bill/BillingEntity lineItem/UsageAccountId lineItem/LineItemType lineItem/UsageStartDate lineItem/UsageEndDate lineItem/ProductCode lineItem/UsageType lineItem/Operation lineItem/AvailabilityZone lineItem/ResourceId lineItem/UsageAmount lineItem/UnblendedRate lineItem/UnblendedCost product/ProductName product/operatingSystem product/instanceType product/location pricing/PurchaseOption pricing/term pricing/unit reservation/AmortizedUpfrontCostForUsage reservation/AvailabilityZone reservation/EffectiveCost reservation/UnusedQuantity reservation/UnusedRecurringFee resourceTags/user:Name resourceTags/user:application resourceTags/user:business_unit resourceTags/user:ccp_managed resourceTags/user:instance_bundle resourceTags/user:launch_date resourceTags/user:service
+}
+# rename system generated names to user friendly names for display on reports
+rename column "lineItem/UsageAccountId" to LinkedAccountId
+rename column pricing/term to "Pricing Type"
+rename column product/operatingSystem to "OS_Type"
+rename column lineItem/ResourceId to ResourceId
+# New tags were added as of September 2018. This code checks to see if the column exists which is required if loading data before
+# September 2018. At some point in the future, this code could be removed if there is no need to load data prior September 2018.
+if (!@COLUMN_EXISTS("resourceTags/user:ccp_managed")) {
+create column "resourceTags/user:ccp_managed"
+}
+if (!@COLUMN_EXISTS("resourceTags/user:launch_date")) {
+create column "resourceTags/user:launch_date"
+}
+
+# Fix data in Pricing Type, OnDemand becomes On Demand
+replace "OnDemand" in "Pricing Type" with "On Demand"
+
+### Uncomment this part to associate LinkedAccountId to Customer Name 
+# Set linked_accounts to the real customer name
+# Import the Customer Lookup table.
+#import "system\lookups\aws\linked_accounts.csv" source aws alias linked_accounts
+#correlate aws.linked_accounts.LinkedAccountName using LinkedAccountId
+#rename column LinkedAccountName to Customer
+###
+
+# remove irrelevant snapshot and workspace resource details to preserve cloud source resource name
+split ResourceId using "/"
+delete columns ResourceId ResourceId_split2 ResourceId_split3 ResourceId_split4
+rename column ResourceId_split1 to CS_ResourceId
+
+# normalising service column
+where ( ( ["resourceTags/user:service"] != "" ) && ( [Service] != "" ) ) {
+set Service to ""
+}
+
+create mergedcolumn "Bundle" from "resourceTags/user:instance_bundle" Bundl
+delete columns "resourceTags/user:instance bundle" "resourceTags/user:instance_bundle"
+# normalising name column and set the Name tag to the CS_ResourceId if it is blank
+# Also check to see if both version of the name tag have values then set one of them to empty
+where ( ["resourceTags/user:Name"] == "" ) {
+set "resourceTags/user:Name" as CS_ResourceId
+}
+
+#Environment Improvement Suggestions
+where ( ( ["resourceTags/user:Name"] != "" ) && ( [RecID] != "" ) ) {
+set RecID to ""
+}
+create mergedcolumn ResourceId from "resourceTags/user:Name" RecID
+delete columns "resourceTags/user:Name"
+
+# Filling empty values
+option overwrite = no
+#set Customer to "Not Specified" # Uncomment this if you have the linked_accounts lookup
+set Bundle to "Not Specified"
+set ResourceId to "Not Specified"
+
+# set system variables for Rate, CoGS and Units of measure
+# NOTE: the rate for Reserved Instances is not supplied from source so we must calculate it
+rename column pricing/unit to Units
+# put "Units" into data where there is no value
+set Units to "Units"
+# For PartialUpfrontCost we must also include reservation/AmortizedUpfrontCostForUsage to get the correct cs_rate
+# that is (reservation/EffectiveCost - reservation/AmortizedUpfrontCostForUsage) / lineItem/UsageAmount
+# The RDS calculation is believed to be correct, but we have not yet tested because of no test data yet
+create column CS_CoGS value 0
+# need to turn on overwrite because the column is already set to 0
+option overwrite = yes
+create mergedcolumn cs_rate from "lineItem/UnblendedRate"
+
+# Modification May 19
+
+where ((["Pricing Type"] == "") && (["pricing/PurchaseOption"] == "" && ["lineItem/LineItemType"] != "RIFee" )) {
+calculate column cs_rate as column "lineItem/UnblendedCost" / column "lineItem/UsageAmount"
+set "Pricing Type" to "On Demand"
+}
+
+# End of Modification
+where ((["Pricing Type"] == "Reserved") && (["pricing/PurchaseOption"] == "No Upfront") && (["product/ProductName"] == "Amazon Elastic Compute Cloud")) {
+move rows to EXCEPTIONS.new
+}
+create column "EC-AUFCFU"
+# 20190308 - Commented this out to create work around / fix (see below)
+#
+#where ((["Pricing Type"] == "Reserved") && (["pricing/PurchaseOption"] == "Partial Upfront") && (["product/ProductName"] == "Amazon Elastic Compute Cloud")) {
+# calculate column "EC-AUFCFU" as column "reservation/EffectiveCost" - column reservation/AmortizedUpfrontCostForUsage
+# calculate column ResRate as column "EC-AUFCFU" / column lineItem/UsageAmount
+# set cs_rate as ResRate
+#}
+# 20190308 FIX - Process BoxUsage that should get RI applied,
+# but have empty Pricing Type & PurchaseOption field
+# This seems to be a problem in the AWS data.
+#
+#Environment Improvement Suggestions
+where ( (["lineItem/LineItemType"] == "DiscountedUsage") && (["reservation/EffectiveCost"] > "0") && (["product/ProductName"] == "Amazon Elastic Compute Cloud")) {
+#calculate column "EC-AUFCFU" as column "reservation/EffectiveCost" - column reservation/AmortizedUpfrontCostForUsage
+#calculate column ResRate as column "EC-AUFCFU" / column lineItem/UsageAmount
+#set cs_rate as ResRate
+move rows to EXCEPTIONS.new
+}
+where ((["Pricing Type"] == "Reserved") && (["pricing/PurchaseOption"] == "No Upfront") && (["product/ProductName"] == "Amazon Relational Database Service")) {
+move rows to EXCEPTIONS.new
+}
+where ((["Pricing Type"] == "Reserved") && (["pricing/PurchaseOption"] == "Partial Upfront") && (["product/ProductName"] == "Amazon Relational Database Service")) {
+#calculate column "EC-AUFCFU" as column "reservation/EffectiveCost" - column reservation/AmortizedUpfrontCostForUsage
+#calculate column ResRate as column "EC-AUFCFU" / column lineItem/UsageAmount
+#set cs_rate as ResRate
+move rows to EXCEPTIONS.new
+}
+#Delete columns ResRate "EC-AUFCFU"
+option overwrite = no
+# Change the ProductName for Amazon Elastic Compute into multiple categories: Virtual Machines, EBS Storage, Snapshots, ElasticIP, LoadBalancer
+# and Other Services to help identify these blocks of EC2 Services.
+create mergedcolumn ProdName from product/ProductName
+option overwrite = yes
+where (["lineItem/UsageType"] =~ /.*(BoxUsage).*/) {
+set ProdName to "Amazon EC2 VM Services"
+}
+where ((["lineItem/UsageType"] =~ /.*(EBS:Volume).*/) || (["lineItem/UsageType"] =~ /.*(EBSOptimized).*/)) {
+set ProdName to "Amazon EC2 EBS Storage"
+}
+where (["lineItem/UsageType"] =~ /.*(SnapshotUsage).*/) {
+set ProdName to "Amazon EC2 EBS Snapshot"
+}
+where (["lineItem/UsageType"] =~ /.*(ElasticIP).*/) {
+set ProdName to "Amazon EC2 ElasticIP"
+}
+where (["lineItem/UsageType"] =~ /.*(LoadBalancer).*/) {
+set ProdName to "Amazon EC2 LoadBalancer"
+}
+where ((["ProdName"] == "Amazon Elastic Compute Cloud") && (["lineItem/LineItemType"] != "RIFee")) {
+#Environment Improvement Suggestions
+replace "Amazon Elastic Compute Cloud" in ProdName with "Amazon EC2 Other Services"
+}
+# If the server is not part of Amazon EC2 then we need to switch the Product Name back to its original Product Name.
+# Example - a DynamoDB server should be in the AWS DynamoDB group.
+where ( ( ["ProdName"] == "Amazon EC2 VM Services" ) && ( ["product/ProductName"] != "Amazon Elastic Compute Cloud" ) ) {
+set ProdName as product/ProductName
+}
+# Move ProdName back to ProductName and delete the working variable ProdName
+set product/ProductName as ProdName
+Delete column ProdName
+# If the UnblendedCost is less than 0 and UnblendedRate is blank - then we have an issued Credit.
+# Build a credit record by setting the Rate to 1, and UsageAmount to the credit.
+# Add metadata tag value for Business Unit, Landscape, Application and ResourceId.
+create column Credit value "Credit"
+option overwrite = yes
+where (["lineItem/LineItemType"] == "Credit") {
+create mergedcolumn temp_landscape separator " " from Credit product/ProductName
+create mergedcolumn temp_application separator " " from Credit lineItem/UsageType
+set ResourceId to "Credit - Not Named"
+set lineItem/AvailabilityZone as product/location
+set lineItem/UsageAmount as "lineItem/UnblendedCost"
+set cs_rate to 1
+}
+delete columns Credit temp_landscape temp_application
+# Capture UnusedQuantity for Reserved Instances that are 'RIFee' and not ProductName "Amazon DynamoDB"
+# This is only done as part of the End of Month processing. At this time we only know of Reserves for
+# EC2 and RDS instances. Will need to code for each product type.
+create column ResZone value "Reservation Zone"
+where ((["lineItem/LineItemType"] == "RIFee") && (["product/ProductName"] == "Amazon Elastic Compute Cloud")) {
+# set lineItem/UsageAmount as reservation/UnusedQuantity
+set lineItem/AvailabilityZone as reservation/AvailabilityZone
+create mergedcolumn temp_resAZ separator " " from ResZone lineItem/AvailabilityZone
+set ResourceId to "Under Utilized Reserve - Not Named"
+replace "Amazon Elastic Compute Cloud" in product/ProductName with "Amazon EC2 VM Services"
+}
+#Environment Improvement Suggestions
+where ((["lineItem/LineItemType"] == "RIFee") && (["product/ProductName"] == "Amazon Relational Database Service")) {
+# set lineItem/UsageAmount as reservation/UnusedQuantity
+set lineItem/AvailabilityZone as reservation/AvailabilityZone
+create mergedcolumn temp_RDSresAZ separator " " from ResZone lineItem/AvailabilityZone
+set ResourceId to "Under Utilized Reserve - Not Named"
+}
+delete columns ResZone temp_resAZ temp_RDSresAZ
+option overwrite = no
+# service_opp will be used in the key value and better describe the service description
+create column service_opp
+where ( ["lineItem/AvailabilityZone"] == "" ) {
+set service_opp as lineItem/Operation
+replace "None" in service_opp
+replace "Unknown" in service_opp
+replace "EBS:" in service_opp
+replace "Not Applicable" in service_opp
+}
+# create service names and key's
+# IMPORTANT NOTE: Add a unique reference to the start of the service_key to link the key value
+# to this unique Data Set that is being loaded.
+# Pattern: CloudSource_CustId_function
+# e.g. AWS_custName_Load, for Capgemini hosted 'custName' is Area (NA, EU, IN) + ExtMstr
+create column KeyExtention value "AWSNAExtMstr_CUR"
+create mergedcolumn service_name separator " " from "pricing/PurchaseOption" lineItem/UsageType OS_Type lineItem/AvailabilityZone service_opp
+replace "HeavyUsage" in service_name with "Reserved"
+replace "Heavy Utilization" in service_name with "Reserved"
+create mergedcolumn service_key separator " - " from KeyExtention "Pricing Type" lineItem/ProductCode lineItem/UsageType OS_Type lineItem/Operation lineItem/AvailabilityZone cs_rate
+# If the usage record is for an AWS Marketplace resource, then modify the service_name and ProductName so that the descriptions match the display
+# formats used by non-Marketplace resources.
+option overwrite = yes
+where ( ["bill/BillingEntity"] == "AWS Marketplace" ) {
+create mergedcolumn mktplace_service_name separator " " from product/ProductName lineItem/UsageType OS_Type lineItem/AvailabilityZone service_opp
+replace " SoftwareUsage" in mktplace_service_name
+set service_name as mktplace_service_name
+#Environment Improvement Suggestions
+set product/ProductName as bill/BillingEntity
+}
+delete column mktplace_service_name
+option overwrite = no
+# aggregate the XXXX DSET to combine like records into a single entry and sum the UsageQty
+aggregate AWS_CUR.usage1 notime LinkedAccountId match service_key match Customer match cs_rate match ResourceId match lineItem/UsageAmount sum
+rename column OS_Type to "Operating System"
+rename column lineItem/UsageAmount to "UsageQuanity"
+rename column lineItem/AvailabilityZone to "CS_Location"
+rename column LinkedAccountId to "CS_AccountID"
+rename column lineItem/UsageStartDate to "CS_StartDate"
+rename column lineItem/UsageType to "UsageType"
+rename column product/ProductName to "Product Group"
+rename column bill/BillingEntity to "Billing Entity"
+rename column lineItem/LineItemType to "Line Item Type"
+rename column resourceTags/user:ccp_managed to "ccp_managed"
+rename column resourceTags/user:launch_date to "launch_date"
+create column interval value individually
+# Export EXCEPTIONS and copy of the data load set to .csv file on local server
+# export EXCEPTIONS.001_records_no_fee_or_rate as "EXCEPTIONS\001_records_no_fee_or_rate_CUR_EOM_${dataDate}.csv"
+# delete columns that we do not want to load into the database
+delete columns service_opp KeyExtention App Service Bundl BU RecID Id_Program lineItem/Operation lineItem/ProductCode lineItem/UnblendedRate lineItem/UnblendedCost pricing/PurchaseOption product/instanceType product/location reservation/AvailabilityZone reservation/UnusedQuantity EXIVITY_AGGR_COUNT
+delete columns reservation/AmortizedUpfrontCostForUsage reservation/EffectiveCost reservation/UnusedRecurringFee
+export AWS_CUR.usage1 as cccms-CUR_with_etl_dataout_EOM_${dataDate}.csv
+export EXCEPTIONS.new as Exceptions_${dataDate}.csv
+finish
+
+#option services = overwrite
+
+services {
+effective_date = 20180101
+service_type = automatic
+description_col = service_name # column name
+category_col = "Product Group" # column with category value
+instance_col = ResourceId # the unique instance i.e. vm-id, username, etc
+usages_col = service_key # the column containing the name of the consumed service
+rate_col = cs_rate # the column containing the rate values
+#cogs_col = CS_CoGS # the column containing the CoG rate values
+interval_col = interval # the column containing the interval (i.e. individually)
+unit_label_col = Units # the column containing the unit label
+consumption_col = UsageQuanity # the column containing the consumed quantity
+}

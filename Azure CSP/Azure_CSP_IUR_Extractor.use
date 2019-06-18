@@ -66,7 +66,7 @@ public var MyDomain = "YourDomain.onmicrosoft.com"
 # Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
 public var exportdir = "system/extracted/AzureCSP"
 # IUR ID
-public var IUR_id = "guid-of-your-internal-usage-subscription" 
+public var IUR_id = "your-IUR-Customer-Id" 
 
 # default variables
 var get_token = yes
@@ -75,6 +75,7 @@ var online_subscriptions = yes
 # default path variables
 var subscriptions_export_file = "${exportdir}/${today}_csp_subscriptions_IUR.csv"
 var usage_export_file = "${exportdir}/${today}_csp_usage_IUR.csv"
+var rg_export_file = "${exportdir}/${today}_csp_RG_IUR.csv"
 var json_filedir = "${exportdir}/json"
 
 #
@@ -211,7 +212,7 @@ loop date_range ${date_diff} {
   csv "usage" = ${usage_export_file}
   csv add_headers "usage" customer_id subscription_id usageStartTime usageEndTime
   csv add_headers "usage" resource_id resource_name resource_category resource_subcategory
-  csv add_headers "usage" quantity unit resourceUri location partNumber orderNumber objectType environmentType tenantName region
+  csv add_headers "usage" quantity unit resourceUri location partNumber orderNumber objectType region
   csv fix_headers "usage"
   
 
@@ -304,7 +305,7 @@ loop date_range ${date_diff} {
     			csv write_field "subscriptions" $JSON(this_subscription).[id]
     			csv write_field "subscriptions" $JSON(this_subscription).[offerId]
     			csv write_field "subscriptions" $JSON(this_subscription).[offerName]
-				csv write_field "subscriptions" $JSON(this_subscription).[friendlyName]
+				  csv write_field "subscriptions" $JSON(this_subscription).[friendlyName]
     			csv write_field "subscriptions" $JSON(this_subscription).[quantity]
     			csv write_field "subscriptions" $JSON(this_subscription).[unitType]
     			csv write_field "subscriptions" $JSON(this_subscription).[creationDate]
@@ -315,8 +316,32 @@ loop date_range ${date_diff} {
     			csv write_field "subscriptions" $JSON(this_subscription).[billingType]
     			csv write_field "subscriptions" $JSON(this_subscription).[contractType]   
     		}
+
+    #========== OBTAINING Resource Group Data ===============#
+    #
+    # print "Retrieving Resource Group data for each subscription"
+    
+    	# print Searching subscriptions of customer id ${IUR_id} for Resource Groups
+    	# ... get their subscriptions  
+   # 	buffer subscriptions = FILE "${json_filedir}/${today}_subs_${IUR_id}.json"
     	
-  
+    		# For each subscription that has an offerName of Microsoft Azure
+   # 		foreach $JSON{subscriptions}.[items] as this_subscription {		
+   #  			var offerName = $JSON(this_subscription).[offerName]
+   # 			if ("${offerName}" == "Azure - Internal/Shared Services")
+   # 			{
+    				# Get the subscription ID
+   # 				var subscription_id = $JSON(this_subscription).[id]
+   #				  loop rgloop {
+   # 						clear http_headers
+   # 						set http_header "Accept: application/json"
+   # 						set http_header "Authorization: Bearer ${AUtoken}"
+    						# print getting usage for start_time=${start_time}
+   # 						buffer resource_groups = http GET "${partnerRoot}/v1/customers/${IUR_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
+
+    #         }
+    #        }
+    #   	  }  
     #========== OBTAINING AZURE USAGE ===============#
     #
     # print "Retrieving Azure usage data"
@@ -350,7 +375,7 @@ loop date_range ${date_diff} {
     						set http_header "Authorization: Bearer ${AUtoken}"
     
     						# print getting usage for start_time=${start_time}
-    						buffer usage = http GET "${partnerRoot}/v1/customers/${IUR_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true" # FAIL IS HERE!!!!
+    						buffer usage = http GET "${partnerRoot}/v1/customers/${IUR_id}/subscriptions/${subscription_id}/utilizations/azure?start_time=${start_time}&end_time=${end_time}&granularity=daily&showDetails=true"
     						json format {usage}
     						save {usage} as "${json_filedir}\${today}_usage_${IUR_id}_${subscription_id}.json"
     					} else {
@@ -405,9 +430,7 @@ loop date_range ${date_diff} {
     						csv write_fields "usage" $JSON(this_item).[instanceData].[partNumber]
     						csv write_fields "usage" $JSON(this_item).[instanceData].[orderNumber]
     						csv write_fields "usage" $JSON(this_item).[attributes].[objectType]
-							csv write_fields "usage" $JSON(this_item).[instanceData].[tags].[environmentType]
-							csv write_fields "usage" $JSON(this_item).[instanceData].[tags].[tenantName]							
-    						csv write_fields "usage" $JSON(this_item).[resource].[region]
+							csv write_fields "usage" $JSON(this_item).[resource].[region]
     						
     					}
     					
@@ -426,7 +449,7 @@ loop date_range ${date_diff} {
 
   csv close "subscriptions"
   csv close "usage"
-  print Closing files
+  #print Closing files
 
   # When running in a loop, we can skip getting a new token,
   # obtaining customers, and subscriptions

@@ -19,6 +19,15 @@ if (${ARGC} != 2)
                 var today = ${ARG_1}
                 var tomorrow = ${ARG_2}
 }
+
+if (${today} == ${tomorrow})
+{
+
+print The second argument must be at least one day more that the previous one
+terminate
+
+}
+
 # Validate the date formats
 match date "^([0-9]{8})$" ${today}
 if (${date.STATUS} != MATCH) {
