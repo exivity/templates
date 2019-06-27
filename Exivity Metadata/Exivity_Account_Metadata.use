@@ -1,0 +1,106 @@
+######################################################################
+#
+# Example Extractor to obtain account metadata from the Exivity API  
+# This can be used for obtaining Metadata and using it in a Transcript
+#
+# ===================================================================
+#                                                           
+# This USE script does not require any parameters
+#                                    
+######################################################################
+
+# Hostname of the Exivity server
+public var exivity_host = "localhost"
+
+# Default port is 8002 for API (this is a different port as the web UI)
+public var api_port = "8002"
+
+public var username = "admin"  # The username that has access to read all account meta data
+public var password = "<User Password>" # The password that goes with above user name
+
+# use report settings
+public var field1 = "<Provide name of Field 1>" # the first metadata field
+public var field2 = "<Provide name of Field 2>" # the second metadata field
+public var field3 = "<Provide name of Field 3>" # the third metadata field
+public var field4 = "<Provide name of Field 4>" # the fourth metadata field
+public var field5 = "<Provide name of Field 5>" # the fifth metadata field
+# ====>
+# fields may be added/removed when required
+#
+
+# loglevel 0
+var JSON_dir = "system/extracted/exivity/json"
+var CSV_dir = "system/extracted/exivity"
+
+var authJSON = "${JSON_dir}/auth.json"
+var metadata_savefile = "${JSON_dir}/metadata_savefile.json"
+
+var metadata_file = "${CSV_dir}/exivity_metadata.csv"
+#
+#=================  End Configuration ==================#
+
+#/ Get an token from Exivity 
+print "Getting Exivity Account Metadata ..."
+
+# Set up the HTTP request parameters
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_body data "username=${username}&password=${password}"
+set http_savefile "${authJSON}"
+buffer token = http POST "https://${exivity_host}:${api_port}/v1/auth/token?app="
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+print "Succesfully authenticated!"
+
+# Create a variable called ${access_token} from the auth token in {token}
+var access_token = "$JSON{token}.[token]"
+print "access token is ${access_token}"
+discard {token}
+
+# Set headers
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_header "Authorization: Bearer ${access_token}"
+
+#
+# Get the account metadata
+set http_savefile "${metadata_savefile}"
+buffer accounts = http GET "https://${exivity_host}:${api_port}/v1/metadata?page[limit]=10000&include=accounts"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {accounts} 
+	print {accounts}
+	terminate
+}
+
+# Write the invoice period
+csv "metadata" = "${metadata_file}"
+csv add_headers "metadata" account_id
+csv add_headers "metadata" ${field1} ${field2} ${field3} ${field4} ${field5}
+csv fix_headers "metadata"
+
+foreach $JSON{accounts}.[data] as this_account
+{
+	# Define the fields to export to match the headers
+
+	# account ID
+	foreach $JSON(this_account).[relationships].[accounts].[data] as this_id
+	{
+		csv write_field metadata $JSON(this_id).[id]
+	}
+
+	# metadata fields
+	csv write_field metadata $JSON(this_account).[attributes].[values].[${field1}]
+	csv write_field metadata $JSON(this_account).[attributes].[values].[${field2}]
+	csv write_field metadata $JSON(this_account).[attributes].[values].[${field3}]
+	csv write_field metadata $JSON(this_account).[attributes].[values].[${field4}]
+	csv write_field metadata $JSON(this_account).[attributes].[values].[${field5}]
+}
+csv close "metadata"
