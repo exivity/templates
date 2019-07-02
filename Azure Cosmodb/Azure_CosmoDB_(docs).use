@@ -1,0 +1,106 @@
+##########################################################################
+# This USE script will obtain lookup data from an Azure CosmoDB collection        
+#
+# This example template will obtain a documents collection, but 
+# other scenario's can be implemented as well. For more information
+# on specific use cases, consult the ComsoDB API documentation at:
+#
+# - https://docs.microsoft.com/en-us/rest/api/cosmos-db/list-documents
+#
+# To execute the standard template, no parameters are required. However, it
+# it required to provide correct public variables, including one or mutiple
+# JSON keys which you want to obtain.
+#
+############################################################################
+
+loglevel INFO
+
+# Generate short lowercase value for current UT day of the week
+match day "(...)" ${DAY_NAME_UTC}
+var short_day = ${day.RESULT}
+lowercase short_day
+
+# Generate short lowercase value for current UTC month
+match month "(...)" ${MONTH_NAME_UTC}
+var short_month = ${month.RESULT}
+lowercase short_month
+
+# Create the RFC7231 date format. Should be all lowercase.
+var today = "${short_day}, ${DAY_UTC} ${short_month} ${YEAR_UTC} ${HOUR_UTC}:${MINUTE_UTC}:${SECOND_UTC} gmt"
+
+# The name of the account. For example: fill in 'acmedata' when your url starts with: https://acmedata.documents.azure.com
+public var accountName = "<your-account-name>"
+# The connection key used for authentication
+public var connectionKey = "<your-secret-key>" 
+# The name of the collection
+public var collectionName = "<your-collection-name>"
+# The name of the database
+public var databaseName = "<your-dbname>"
+# The query to be executed
+public var query = "SELECT * FROM <your-collection-name>"
+# The name of the first JSON key you want to obtain
+public var col1 = "<JSON-key-name1>"
+# The name of the second JSON key you want to obtain
+public var col2 = "<JSON-key-name2>"
+# # The name of the third JSON key you want to obtain
+public var col3 = "<JSON-key-name3>"
+# The name of the fourth JSON key you want to obtain (you are free to add/remove more columns)
+public var col4 = "<JSON-key-name4>"
+
+# set the comsodb static vars for obtaining docs. These might be changed
+var resourceType = "docs"
+var method = "post"
+
+# Constuct the URI of the Azure CosmoDB documents collection
+var rootUri = "https://${accountName}.documents.azure.com"
+var collName = "dbs/${databaseName}/colls/${collectionName}"
+var request_uri = "${rootUri}/${collName}/${resourceType}"
+
+# set the output folder
+public var exportdir = "system/extracted/CosmoDB" # Directory where to save files
+var json_filedir = "system/extracted/CosmoDB/json"
+
+# Define CSV format
+var cosmodb_export_file = "${exportdir}/azure_cosmodb_${YEAR}${MONTH}${DAY}.csv"
+csv "cosmodb_csv" = "${cosmodb_export_file}"
+csv add_headers "cosmodb_csv" ${col1} ${col2} ${col3} ${col4}
+csv fix_headers "cosmodb_csv"
+
+# set contents type used for auth
+var text = "${method}${NEWLINE}${resourceType}${NEWLINE}${collName}${NEWLINE}${today}${NEWLINE}${NEWLINE}"
+
+# hash the text using base64 encoded key
+hash sha256 hmac b64 ${connectionKey} text as signature b64
+var auth = "type=master&ver=1.0&sig=${signature}"
+# encode the auth header using component URI encoding
+uri component-encode auth
+
+# HTTP Call  
+clear http_headers
+# Set up the HTTP request parameters
+set http_header "Authorization: ${auth}"
+set http_header "x-ms-version: 2015-12-16"
+set http_header "x-ms-date: ${today}"
+set http_header "x-ms-documentdb-is-query: true"
+set http_header "Content-Type: application/sql"
+set http_body data "${query}"
+set http_savefile "${json_filedir}/azure_docs_out.json"
+print "Calling documents URL..."
+buffer cosmodb = http POST "${request_uri}"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {cosmodb} 
+	print {cosmodb}
+	terminate
+}
+
+# Generate the output data
+print "Generating output data..."
+foreach $JSON{cosmodb}.[Documents] as this_item {
+	csv write_fields "cosmodb_csv" $JSON(this_item).[${col1}]
+	csv write_fields "cosmodb_csv" $JSON(this_item).[${col2}]
+	csv write_fields "cosmodb_csv" $JSON(this_item).[${col3}]
+	csv write_fields "cosmodb_csv" $JSON(this_item).[${col4}]
+}
+csv close "cosmodb_csv"
