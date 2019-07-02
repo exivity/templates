@@ -1,9 +1,9 @@
-##########################################################################
-# This USE script will obtain lookup data from an Azure CosmoDB collection        
+###########################################################################
+# This USE script will obtain lookup data from an Azure CosmosDB collection        
 #
 # This example template will obtain a documents collection, but 
 # other scenario's can be implemented as well. For more information
-# on specific use cases, consult the ComsoDB API documentation at:
+# on specific use cases, consult the CosmosDB API documentation at:
 #
 # - https://docs.microsoft.com/en-us/rest/api/cosmos-db/list-documents
 #
@@ -51,20 +51,20 @@ public var col4 = "<JSON-key-name4>"
 var resourceType = "docs"
 var method = "post"
 
-# Constuct the URI of the Azure CosmoDB documents collection
+# Constuct the URI of the Azure CosmosDB documents collection
 var rootUri = "https://${accountName}.documents.azure.com"
 var collName = "dbs/${databaseName}/colls/${collectionName}"
 var request_uri = "${rootUri}/${collName}/${resourceType}"
 
 # set the output folder
-public var exportdir = "system/extracted/CosmoDB" # Directory where to save files
-var json_filedir = "system/extracted/CosmoDB/json"
+public var exportdir = "system/extracted/CosmosDB" # Directory where to save files
+var json_filedir = "system/extracted/CosmosDB/json"
 
 # Define CSV format
-var cosmodb_export_file = "${exportdir}/azure_cosmodb_${YEAR}${MONTH}${DAY}.csv"
-csv "cosmodb_csv" = "${cosmodb_export_file}"
-csv add_headers "cosmodb_csv" ${col1} ${col2} ${col3} ${col4}
-csv fix_headers "cosmodb_csv"
+var cosmosdb_export_file = "${exportdir}/azure_cosmosdb_${YEAR}${MONTH}${DAY}.csv"
+csv "cosmosdb_csv" = "${cosmosdb_export_file}"
+csv add_headers "cosmosdb_csv" ${col1} ${col2} ${col3} ${col4}
+csv fix_headers "cosmosdb_csv"
 
 # set contents type used for auth
 var text = "${method}${NEWLINE}${resourceType}${NEWLINE}${collName}${NEWLINE}${today}${NEWLINE}${NEWLINE}"
@@ -86,21 +86,21 @@ set http_header "Content-Type: application/sql"
 set http_body data "${query}"
 set http_savefile "${json_filedir}/azure_docs_out.json"
 print "Calling documents URL..."
-buffer cosmodb = http POST "${request_uri}"
+buffer cosmosdb = http POST "${request_uri}"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
 	print The server response was:
-	json format {cosmodb} 
-	print {cosmodb}
+	json format {cosmosdb} 
+	print {cosmosdb}
 	terminate
 }
 
 # Generate the output data
 print "Generating output data..."
-foreach $JSON{cosmodb}.[Documents] as this_item {
-	csv write_fields "cosmodb_csv" $JSON(this_item).[${col1}]
-	csv write_fields "cosmodb_csv" $JSON(this_item).[${col2}]
-	csv write_fields "cosmodb_csv" $JSON(this_item).[${col3}]
-	csv write_fields "cosmodb_csv" $JSON(this_item).[${col4}]
+foreach $JSON{cosmosdb}.[Documents] as this_item {
+	csv write_fields "cosmosdb_csv" $JSON(this_item).[${col1}]
+	csv write_fields "cosmosdb_csv" $JSON(this_item).[${col2}]
+	csv write_fields "cosmosdb_csv" $JSON(this_item).[${col3}]
+	csv write_fields "cosmosdb_csv" $JSON(this_item).[${col4}]
 }
-csv close "cosmodb_csv"
+csv close "cosmosdb_csv"
