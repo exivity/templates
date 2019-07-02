@@ -1,0 +1,84 @@
+###########################################################################
+# This USE script will obtain lookup data from Azure Table storage        
+#
+# This example template will obtain data from a Azure Table storage table, 
+# but other scenario's can be implemented as well. For more information
+# on specific use cases, consult the Azure Table storage documentation at:
+#
+# - https://docs.microsoft.com/en-us/azure/cosmos-db/table-storage-overview
+#
+# To execute the standard template, no parameters are required. However, it
+# it required to provide correct public variables, including one or mutiple
+# JSON keys which you want to obtain.
+#
+#############################################################################
+
+
+
+# The name of the Azure storage account
+public var storageAccount = "<storage-account-name>"
+# The name of the Azure Table you want to query
+public var tableName = "<table-name>"
+# The access key to the Azure storage account as described here https://docs.microsoft.com/en-us/azure/storage/common/storage-account-manage
+public var accesskey = "<your-secret-access-key>"
+# The name of the first JSON key you want to obtain
+public var col1 = "<JSON-key-name1>"
+# The name of the second JSON key you want to obtain
+public var col2 = "<JSON-key-name1>"
+
+# set the output folder
+public var exportdir = "system/extracted/AzureTables" # Directory where to save files
+var json_filedir = "system/extracted/AzureTables/json"
+
+# Define CSV format
+var azuretables_export_file = "${exportdir}/azure_tables_${YEAR}${MONTH}${DAY}.csv"
+csv "azuretables_csv" = "${azuretables_export_file}"
+csv add_headers "azuretables_csv" ${col1} ${col2}
+csv fix_headers "azuretables_csv"
+
+# some default variables
+var version = "2017-04-17"
+var resource = "${tableName}"
+var table_url = "https://${storageAccount}.table.core.windows.net/${resource}"
+
+# Generate short value for current UTC day of the week
+match day "(...)" ${DAY_NAME_UTC}
+var short_day = ${day.RESULT}
+
+# Generate short value for current UTC month
+match month "(...)" ${MONTH_NAME_UTC}
+var short_month = ${month.RESULT}
+
+# Create the RFC-7231 date format. 
+var date_rfc7231 = "${short_day}, ${DAY_UTC} ${short_month} ${YEAR_UTC} ${HOUR_UTC}:${MINUTE_UTC}:${SECOND_UTC} GMT"
+var stringToSign = "${date_rfc7231}${NEWLINE}/${storageAccount}/${resource}"
+# hash the stringToSign using base64 encoded key
+hash sha256 hmac b64 ${accesskey} stringToSign as signature b64
+var auth = "SharedKeyLite ${storageAccount}:${signature}"
+
+# HTTP Call  
+clear http_headers
+# Set up the HTTP request parameters
+set http_header "Authorization: ${auth}"
+set http_header "x-ms-version: ${version}"
+set http_header "x-ms-date: ${date_rfc7231}"
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/json"
+set http_savefile "${json_filedir}/azure_docs_out.json"
+print "Calling Azure Table Storage end point..."
+buffer azuretable = http GET "${table_url}"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {azuretable} 
+	print {azuretable}
+	terminate with error
+}
+json format {azuretable} 
+
+print "Generating Azure Tables output data..."
+foreach $JSON{azuretable}.[value] as this_item {
+	csv write_fields "azuretables_csv" $JSON(this_item).[${col1}]
+	csv write_fields "azuretables_csv" $JSON(this_item).[${col2}]
+}
+csv close "azuretables_csv"
