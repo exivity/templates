@@ -26,7 +26,7 @@ if ((${ARGC} != 3) && (${ARGC} != 5) && (${ARGC} != 2) && (${ARGC} != 4)) {
   }
   
   if (${ARGC} == 5) {
-  var offset = ${ARG_3}
+  var offset = 0
   var Billing_start_day = ${ARG_4}
   var actualyear = ${ARG_5}
   }
@@ -38,7 +38,7 @@ if ((${ARGC} != 3) && (${ARGC} != 5) && (${ARGC} != 2) && (${ARGC} != 4)) {
   }
   
   if (${ARGC} == 4) {
-  var offset = ${ARG_3}
+  var offset = 0
   var Billing_start_day = ${ARG_4}
   var actualyear = ${YEAR}
   }

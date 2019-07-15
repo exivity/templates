@@ -27,7 +27,8 @@ append azure.subscriptionsIUR to azure.subscriptions
 rename column azure.customers.ID to customer_id
 rename column azure.customers.Name to customer_name
 rename column azure.stack_rates.meter_id to resource_id
-rename column azure.subscriptions.offerName to subscriptionName
+rename column azure.subscriptions.friendlyName to subscriptionName
+uppercase values in columns azure.subscriptions.subscriptionName
 capitalize values in columns azure.customers.customer_id
 capitalize values in columns azure.subscriptions.customer_id
 capitalize values in columns customer_id

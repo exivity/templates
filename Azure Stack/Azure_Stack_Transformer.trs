@@ -14,8 +14,7 @@ import "import/lookup/AzureStack_rates.csv" source azure alias stack_rates # CHA
 # import example rates
 default dset azure.stack_rates
 lowercase values in column service_key
-lowercase values in column "Parent Meter"
-create mergedcolumn correlCol separator " " from service_name "Parent Meter"
+create mergedcolumn correlCol from service_name
 
 # obtain subscription names and normalise data
 default dset azure.stack_usage
@@ -34,7 +33,7 @@ create mergedcolumn ImageType from additionalInfo /.*ImageType[:\"]*([^\",}]*).*
 create mergedcolumn ServiceType from additionalInfo /.*ServiceType[:\"]*([^\",}]*).*/
 delete column additionalInfo
 
-export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}BUG.csv" 
+#export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}BUG.csv" 
 # set the resource group, provider and resource id
 create mergedcolumn "Resource Group" from resourceUri /resourceGroups\/(.*)\/providers/
 #create mergedcolumn Resource from resourceUri /\/(\w*)$/
@@ -45,47 +44,41 @@ uppercase values in column "Meter ID"
 create mergedcolumn service_key from "Meter ID"
 lowercase values in column service_key
 
-# import columns from the rate example csv using service_key correlation
-
-where ([ServiceType] != "") {
-  move row to azure.rates
-}
-
-default dset azure.rates
-create mergedcolumn correlCol separator " " from ServiceType service_key
-correlate unit rate using correlCol assuming azure.stack_rates
-rename column ServiceType to service_name
-
 default dset azure.stack_usage
-correlate service_name unit rate using "service_key" assuming azure.stack_rates
-append azure.rates to azure.stack_usage
+correlate service_name unit rate Category using "service_key" assuming azure.stack_rates
 #delete column service_key
 #create mergedcolumn service_key from "Meter ID"
-create column Category value "Azure Stack Services"
 
 # auto generate VM Size Type service names
-create mergedcolumn vms_size_service separator " " from "ServiceType" "service_name"
-where ([service_key] =~ /.*[a-zA-Z]*_.*/) {
+create mergedcolumn vms_size_service separator " " from "ServiceType"
+option overwrite = YES
+  where ([vms_size_service] != "") {
   set service_name as vms_size_service
-}
+ }
 
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
 set rate to "0"
 create column cogs value "0"
 set unit to "Unit/Hours"
+set "Subscription Name" to "Default Subscription"
 create column interval value "individually"
 set Category to "Azure Stack Generic Resources"
 
+# 20% Uplift
+option overwrite = Yes
+set cogs as rate
+calculate column rate as column rate * value 1.20
+
 # cleanup
-delete columns resourceUri tags usageStartTime    usageEndTime
+delete columns resourceUri tags usageStartTime  correlCol  usageEndTime
 
 # export data for troubleshooting
 export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}.csv" 
 
 finish
 
-# option services = overwrite
+#option services = overwrite
 services {
   effective_date = 20180101
     service_type = automatic
