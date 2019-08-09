@@ -6,7 +6,12 @@ option embed = yes
 import "system/extracted/AzureEA/${dataDate}_ea_usage.csv" source azure alias ea  options {
   filter = (["Date"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/)
 }
+
+# Importing RI costs (uncomment if you want to include RI costs)
+#import "system/extracted/AzureEA/${dataDate}_ea_RI.csv" source azure alias eaRI
+
 # Normalise column headers
+default dset azure.ea
 rename column "SubscriptionName" to "Subscription Name"
 rename column "ResourceGroup" to "Resource Group"
 lowercase values in column "Resource Group" 
@@ -15,6 +20,22 @@ rename column "UnitOfMeasure" to "unit"
 rename column "ConsumedQuantity" to "quantity"
 rename column "ResourceRate" to "rate"
 # Obtain the Resource
+
+#Uncomment the following if block in case you want to include RI costs
+#if (!@DSET_EMPTY(azure.eaRI)) {
+#default dset azure.eaRI
+#delete columns currentEnrollment	eventDate armSkuName term region
+#rename column "PurchasingsubscriptionName" to "Subscription Name"
+#rename column "costCenter" to "Cost Center"
+#rename column "amount" to "rate"
+#rename column "description" to Product
+#rename column "reservationOrderId" to "MeterId"
+#create column "Resource Group" value "Reserved Instance"
+#create column MeterCategory value "Reserved Instance" 
+#append azure.eaRI to azure.ea
+#default dset azure.ea
+#}
+
 create mergedcolumn Resource from "InstanceId" /^.*\/(.*)$/
 lowercase values in column "Resource"
 # ==================== Get Tags ==================== #

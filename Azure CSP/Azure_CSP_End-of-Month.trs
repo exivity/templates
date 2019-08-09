@@ -102,8 +102,10 @@ capitalize values in columns azure.csp_office.customer_id
 append azure.csp_office to azure.csp_usage
 }
 
-create mergedcolumn service_name separator " - " from  "resource_name" "resource_subcategory" "location" "region"
-create mergedcolumn service_key separator " ${dataMonth}${dataYear} " from "subscription_id" "resource_id"
+# Service creation
+lowercase values in columns customer_id resource_id subscription_id customer_name resource_name region unit resource_category resource_subcategory 
+create mergedcolumn service_name separator " " from "resource_name" "resource_category" "resource_subcategory" "region"
+create mergedcolumn service_key from "resource_id"
 
 # Correlate resourceUri
 lowercase values in columns azure.csp_usageDaily.resource_id azure.csp_usageDaily.subscription_id azure.csp_usage.resource_id azure.csp_usage.subscription_id

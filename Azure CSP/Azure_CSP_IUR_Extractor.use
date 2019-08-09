@@ -398,6 +398,13 @@ loop date_range ${date_diff} {
     					var usagecount = $JSON{usage}.[totalCount]
     
   						if (${usagecount} == 1000) {
+						
+							 var next_link = $JSON{usage}.[links].[next].[uri]
+   							 if ( "${next_link}" == "EXIVITY_NOT_FOUND") {
+  							  print "No Continuation URI available"
+    						  exit_loop
+    						  }
+							  
   							# Extract the continuation token
   							foreach $JSON{usage}.[links].[next].[headers] as this_header {
   								var hkey = $JSON(this_header).[key]

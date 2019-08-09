@@ -20,12 +20,11 @@ if (${ARGC} != 2)
                 var tomorrow = ${ARG_2}
 }
 
-if (${today} == ${tomorrow})
-{
 
-print The second argument must be at least one day more that the previous one
-terminate
-
+if (${today} == ${tomorrow}) {
+	var flag = 1
+} else {
+	var flag = 0
 }
 
 # Validate the date formats
@@ -133,17 +132,22 @@ if (${month} != ${tomorrow_month}) {
   var year_flag = "no" 
 }
 
+if ( ${flag} == 1 ) {
+    var date_diff = 1
+}
 
 loop date_range ${date_diff} {
   
   if ((${day} == ${lastday}) && (${month_flag} == "yes") && (${tomorrow_month} != 12)){
   var next_day = 00
   var usage_export_file = "${exportdir}/${year}${month}${day}_ea_usage.csv"
+  var RI_export_file = "${exportdir}/${year}${month}${day}_ea_RI.csv"
   var tomorrow_month += 1
   }
   if ((${day} == ${lastday}) && (${month_flag} == "yes") && (${tomorrow_month} == 12)){
   var next_day = 00
   var usage_export_file = "${exportdir}/${year}${month}${day}_ea_usage.csv"
+  var RI_export_file = "${exportdir}/${year}${month}${day}_ea_RI.csv"
   var tomorrow_month = 01
   var tomorrow_year += 1
   }
@@ -158,9 +162,11 @@ loop date_range ${date_diff} {
   }
 
   var usage_export_file = "${exportdir}/${year}${month2}${day}_ea_usage.csv"
+  var RI_export_file = "${exportdir}/${year}${month}${day}_ea_RI.csv"
   
   } else {
   var usage_export_file = "${exportdir}/${year}${month}${day}_ea_usage.csv"
+  var RI_export_file = "${exportdir}/${year}${month}${day}_ea_RI.csv"
   }
 
   csv "usage" = ${usage_export_file}
@@ -169,7 +175,31 @@ loop date_range ${date_diff} {
   csv add_headers "usage" ConsumedQuantity ResourceRate ResourceLocation ConsumedService InstanceId ServiceInfo1 ServiceInfo2 Tags StoreServiceIdentifier DepartmentName CostCenter UnitOfMeasure ResourceGroup
   csv fix_headers "usage"
 
+  csv "RI" = ${RI_export_file}
+  csv add_headers "RI" purchasingEnrollment armSkuName term region PurchasingsubscriptionGuid PurchasingsubscriptionName accountName accountOwnerEmail
+  csv add_headers "RI" departmentName costCenter currentEnrollment eventDate reservationOrderId description eventType quantity amount currency reservationOrderName
+  csv fix_headers "RI"
+
 var next_day += 1
+
+if ( ${flag} == 1 ) {
+  get_last_day_of ${year}${month} as lastday
+
+  if ( ${lastday} == ${day} ) { 
+     var tomorrow_day = 01
+	 if ( ${month} != 12 ) {
+	   var tomorrow_month += 1
+	 }
+	 else {
+	   var tomorrow_month = 01
+	   var tomorrow_year += 1
+	 }
+
+  }
+  else {
+    var tomorrow_day += 1
+  }
+}
 
   var start_time = ${year}-${month}-${day}
   var end_time = ${tomorrow_year}-${tomorrow_month}-${next_day}
@@ -229,6 +259,35 @@ buffer usageItems = http get "https://consumption.azure.com/v3/enrollments/${EA_
 
     }
 
+    clear http_headers
+    set http_header "Authorization: Bearer ${EA_secret}"   
+    set http_savefile "${exportdir}/json/http_savefileRI_${start_time}.json"
+    buffer RI_Items = http get "https://consumption.azure.com/v3/enrollments/${EA_enrollment}/reservationcharges?startDate=${start_time}&endDate=${end_time}"
+    print {RI_Items}
+
+    foreach $JSON{RI_Items} as this_RIItem {
+
+    csv write_field RI $JSON(this_RIItem).[purchasingEnrollment]
+    csv write_field RI $JSON(this_RIItem).[armSkuName]
+    csv write_field RI $JSON(this_RIItem).[term]
+    csv write_field RI $JSON(this_RIItem).[region]
+    csv write_field RI $JSON(this_RIItem).[PurchasingsubscriptionGuid]
+    csv write_field RI $JSON(this_RIItem).[PurchasingsubscriptionName]
+    csv write_field RI $JSON(this_RIItem).[accountName]
+    csv write_field RI $JSON(this_RIItem).[accountOwnerEmail]
+    csv write_field RI $JSON(this_RIItem).[departmentName]
+    csv write_field RI $JSON(this_RIItem).[costCenter]
+    csv write_field RI $JSON(this_RIItem).[currentEnrollment]
+    csv write_field RI $JSON(this_RIItem).[eventDate]
+    csv write_field RI $JSON(this_RIItem).[reservationOrderId]
+    csv write_field RI $JSON(this_RIItem).[description]
+    csv write_field RI $JSON(this_RIItem).[eventType]
+    csv write_field RI $JSON(this_RIItem).[quantity]
+    csv write_field RI $JSON(this_RIItem).[amount]
+    csv write_field RI $JSON(this_RIItem).[currency]
+    csv write_field RI $JSON(this_RIItem).[reservationOrderName]
+
+    }
 
     var next_link = $JSON{usageItems}.[nextLink]
     # print next_link
@@ -238,6 +297,7 @@ buffer usageItems = http get "https://consumption.azure.com/v3/enrollments/${EA_
     exit_loop
     }
 discard {usageItems}
+discard {RI_Items}
 # print Next link is: ${next_link}
 
 clear http_headers
@@ -247,6 +307,7 @@ buffer usageItems = http get "${next_link}"
 
 }
 csv close "usage"
+csv close "RI"
 #print Data retrieved
 
   var day += 1
