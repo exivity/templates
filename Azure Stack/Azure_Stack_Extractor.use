@@ -282,116 +282,70 @@ loop date_range ${date_diff} {
   
   #============= GETTING AZURE STACK USAGE RECORDS ==========# 
   #
-  # print "Retrieving Azure usage data"
-  
-  csv "usage" = ${usage_export_file}
-  csv add_headers "usage" id name type subscriptionId usageStartTime usageEndTime quantity meterId
-  csv add_headers "usage" resourceUri location tags additionalInfo
-  csv fix_headers "usage"
-  
-  # Assume there will be no continuation required
-  var continuationToken = "none"
-  
-  # We'll loop here as there may be continuation required which will involve
-  # additional HTTP requests for the usage for this customer
-  var totalrecords = "0"
-  loop usageloop {
-  	# Query the usage for the customer_id and subscription_id
-  	if (${usageloop.COUNT} == 1) {
-  		# Initial request
-  		# print Getting up to 1000 usage records ...
-  		clear http_headers
-  		set http_savefile "${json_filedir}\http_consumption_init-1k.json"
-  		set http_header "Accept: application/json"
-  		set http_header "Authorization: Bearer ${access_token}"
-  
-  		# print getting usage for start_time=${start_time}
-  		# do the request for consumption
-      buffer usage = http GET "${ARM_endpoint}/subscriptions/${provider_sub}/providers/Microsoft.Commerce/subscriberUsageAggregates?reportedStartTime=${start_time}&reportedEndTime=${end_time}&aggregationGranularity=${granularity}&api-version=2015-06-01-preview"
-      
-      if (${HTTP_STATUS_CODE} != 200) {
-      	# print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-      	# print The server response was:
-      	json format {usage} 
-      	# print {usage}
-      	terminate
-      }
-      # print Succesfully obtained usage
-      json format {usage}
-  		save {usage} as "${json_filedir}\${today}_usage_azure_stack_${provider_sub}.json"
-  		# set pevious link to next link
-  		var previous_link = $JSON{usage}.[nextLink]
-  	} else {
-  	  
-  	  # first check if we got a new continuationToken
-  	  # if its idential as the last call, we should be finished
-  	  if ( ${continuation_uri} == ${previous_link} ) {
-  	    # we're done so exit loop
-  	    exit_loop
-  	  } else {
-  	    # we got a new link to call
-  	    var previous_link = $JSON{usage}.[nextLink]
-  	  }
-  	  
-  		# Need to use the continuation token
-  		# print "Calling continuationToken ... "
-  		clear http_headers
-  		set http_header "Accept: application/json"
-  		set http_header "Authorization: Bearer ${access_token}"
-  		set http_header "MS-ContinuationToken: ${continuationToken}"
-  		# print Calling: "${continuation_uri}"
-  		buffer usage = http GET "${continuation_uri}"
-  		json format {usage}
-  		save {usage} as "${json_filedir}\${today}_usage_azure_stack${provider_sub}_${usageloop.COUNT}.json"
-  	}
-  	if (${HTTP_STATUS_CODE} != 200) {
-  		# print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-  		# print failing to obtain use for customer ${customer_id} with subscription id ${subscription_id}
-  	}
-  
-  	# Check the total count returned
-  	var usagecount = 800
+
+# print Retrieving Azure usage data
+
+csv "usage" = ${usage_export_file}
+csv add_headers "usage" id name type subscriptionId usageStartTime usageEndTime quantity meterId
+csv add_headers "usage" resourceUri location tags additionalInfo
+#csv add_headers "usage" ServiceType ImageType
+csv fix_headers "usage"
+
+# Assume there will be no continuation required
+var Usage_URI = "${ARM_endpoint}/subscriptions/${provider_sub}/providers/Microsoft.Commerce.Admin/subscriberUsageAggregates?reportedStartTime=${start_time}&reportedEndTime=${end_time}&aggregationGranularity=${granularity}&api-version=2015-06-01-preview"
+# We'll loop here as there may be continuation required which will involve
+# additional HTTP requests for the usage for this customer
+
+loop usageloop {
+	# Query the usage for the customer_id and subscription_id
+		# Initial request
+		# print Getting up to 1000 usage records ...
+		clear http_headers
+		set http_savefile "${json_filedir}/http_consumption_init-1k.json"
+		set http_header "Accept: application/json"
+		set http_header "Authorization: Bearer ${access_token}"
+        buffer usage = http GET ${Usage_URI}
     
-  	if (${usagecount} == 1000) {
-  		# Extract the continuation token
-  				var continuation_uri = $JSON{usage}.[nextLink]
-  				# print Continuation URI is: ${continuation_uri}
-  				exit_loop
-  			}
-  
-  	# Render the usage as a CSV file
-  	foreach $JSON{usage}.[value] as this_item {
-  		csv write_fields "usage" $JSON(this_item).[id]
-  		csv write_fields "usage" $JSON(this_item).[name]
-  		csv write_fields "usage" $JSON(this_item).[type]
-  		csv write_fields "usage" $JSON(this_item).[properties].[subscriptionId]
-  		csv write_fields "usage" $JSON(this_item).[properties].[usageStartTime]
-  		csv write_fields "usage" $JSON(this_item).[properties].[usageEndTime]
-  		csv write_fields "usage" $JSON(this_item).[properties].[quantity]
-  		csv write_fields "usage" $JSON(this_item).[properties].[meterId]
-  		
-  		# process the embedded json
-  		buffer embed_buffer = data "$JSON(this_item).[properties].[instanceData]"
-  		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[resourceUri]
-  		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[location]
-  		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[tags]
-  		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[additionalInfo]
-  		discard {embed_buffer}
-  	}
-  	
-  	var continuation_uri = $JSON{usage}.[nextLink]
-  	# print "continuation_uri is now: ${continuation_uri}"
-  	if ( (${continuation_uri.LENGTH} > 17) && (${totalrecords} > 0) ) {
-  		# print ${totalrecords} usage records received, getting up to 1000 more ...
-  		var totalrecords += 1000
-  	} else {
-  		# print Approx. ${totalrecords} usage records received
-  		# No more continuation required
-  		exit_loop
-  	}
-  } # End If
-  
-  # close the csv files and delete the buffers
+    if (${HTTP_STATUS_CODE} != 200) {
+    	# print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    	# print The server response was:
+    	json format {usage} 
+    	# print {usage}
+    	terminate
+    }
+    # print Succesfully obtained usage
+    json format {usage}
+	var Usage_URI = $JSON{usage}.[nextLink]
+	
+	# Render the usage as a CSV file
+	foreach $JSON{usage}.[value] as this_item {
+		csv write_fields "usage" $JSON(this_item).[id]
+		csv write_fields "usage" $JSON(this_item).[name]
+		csv write_fields "usage" $JSON(this_item).[type]
+		csv write_fields "usage" $JSON(this_item).[properties].[subscriptionId]
+		csv write_fields "usage" $JSON(this_item).[properties].[usageStartTime]
+		csv write_fields "usage" $JSON(this_item).[properties].[usageEndTime]
+		#csv write_fields "usage" $JSON(this_item).[properties].[instanceData]
+		csv write_fields "usage" $JSON(this_item).[properties].[quantity]
+		csv write_fields "usage" $JSON(this_item).[properties].[meterId]
+		
+		# process the embedded json
+		buffer embed_buffer = data "$JSON(this_item).[properties].[instanceData]"
+		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[resourceUri]
+		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[location]
+		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[tags]
+		csv write_fields "usage" $JSON{embed_buffer}.[Microsoft.Resources].[additionalInfo]
+		discard {embed_buffer}
+    
+	}
+
+   if ("${Usage_URI}" == "EXIVITY_NOT_FOUND") {
+    #print No next_link we can finish
+	exit_loop
+   }
+
+
+} # End If
   csv close "usage"
   csv close "subscriptions"
   discard {usage}
