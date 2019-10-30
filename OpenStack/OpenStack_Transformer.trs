@@ -1,0 +1,198 @@
+# OpenStack Transformer
+
+#
+# Import OpenStack data
+#
+
+# VM Data
+import "system/extracted/OpenStack/${dataDate}_OpenStack_VMs_.*.csv" source openstack alias VMCPU options {
+    pattern enabled
+    filter ( [vm_state] == "active" ) # Only taking into account VMs that are Powered On
+    exclude ram	disk
+}
+
+import "system/extracted/OpenStack/${dataDate}_OpenStack_VMs_.*.csv" source openstack alias VMRam options {
+    pattern enabled
+    filter ( [vm_state] == "active" ) # Only taking into account VMs that are Powered On
+    exclude cpu	disk
+}
+
+import "system/extracted/OpenStack/${dataDate}_OpenStack_VMs_.*.csv" source openstack alias VMDisk options {
+    pattern enabled
+    filter ( [vm_state] == "active" ) # Only taking into account VMs that are Powered On
+    exclude cpu ram
+}
+
+# Flavors
+import "system/extracted/OpenStack/${dataDate}_OpenStack_flavor_.*.csv" source openstack alias flavors options {
+    pattern enabled
+}
+
+# Tenants
+import "system/extracted/OpenStack/${dataDate}_OpenStack_tenants_.*.csv" source openstack alias tenants options {
+    pattern enabled
+}
+
+# Volumes
+import "system/extracted/OpenStack/${dataDate}_OpenStack_volumes_.*.csv" source openstack alias volumes options {
+    pattern enabled
+    filter ( [status] == "in-use" || [status] == "available") # Only taking into account VMs that are Powered On
+}
+
+### VM CPU ###
+default dset openstack.VMCPU
+# Correlating tenant name
+correlate name using tenant_id assuming openstack.tenants
+rename column name to tenant
+
+# Normalising
+rename column instance_name to instance
+lowercase values in column instance
+rename column cpu to UsageQuantity
+create column service_name value "OpenStack vCPU"
+create column service_desc value "OpenStack vCPU"
+create column type_col value "OpenStack Compute"
+create column Units value "vCPUs"
+# Final normalising
+create column Cogs value 0
+create column Rate value 1.2
+# Deleting unnecesary columns
+delete columns user_id tenant_id hostid vm_state created terminated_at updated flavor_id image_id volumes_attached
+
+### VM Memory ###
+default dset openstack.VMRam
+# Correlating tenant name
+correlate name using tenant_id assuming openstack.tenants
+rename column name to tenant
+
+# Normalising
+rename column instance_name to instance
+lowercase values in column instance
+rename column ram to UsageQuantity
+create column service_name value "OpenStack Memory"
+create column service_desc value "OpenStack Memory"
+create column type_col value "OpenStack Compute"
+create column Units value "GB"
+# Final normalising
+create column Cogs value 0
+create column Rate value 0.2
+# Deleting unnecesary columns
+delete columns user_id tenant_id hostid vm_state created terminated_at updated flavor_id image_id volumes_attached
+
+### VM Disk ###
+default dset openstack.VMDisk
+# Correlating tenant name
+correlate name using tenant_id assuming openstack.tenants
+rename column name to tenant
+
+# Normalising
+rename column instance_name to instance
+lowercase values in column instance
+rename column disk to UsageQuantity
+create column service_name value "OpenStack Disk"
+create column service_desc value "OpenStack Disk"
+create column type_col value "OpenStack Compute"
+create column Units value "GB"
+# Final normalising
+create column Cogs value 0
+create column Rate value 0.5
+# Deleting unnecesary columns
+delete columns user_id tenant_id hostid vm_state created terminated_at updated flavor_id image_id volumes_attached
+
+### VM Storage ###
+default dset openstack.volumes
+# Correlating tenant
+rename column server_id to serverid
+correlate tenant using serverid assuming openstack.VMCPU
+# Correlating tags
+#correlate environment component service team using serverid assuming openstack.VMCPU # Change it for your desired tag column names
+
+# Normalising
+rename column size to UsageQuantity
+option overwrite = no
+set name to "available"
+create mergedcolumn instance separator " " from name volume_type
+lowercase values in column instance
+# Create service_name and service_desc distinguishing between attached and available storage
+create column service_name
+create column service_desc
+
+where ([status] == "in-use") {
+set service_name to "OpenStack Attached Storage"
+set service_desc to "OpenStack Attached Storage"
+}
+
+where ([status] == "available") {
+set service_name to "OpenStack Available Storage"
+set service_desc to "OpenStack Available Storage"
+}
+
+create column type_col value "OpenStack Storage"
+create column Units value "GB"
+# Final normalising
+create column Cogs value 0
+create column Rate value 0.5
+# Deleting unnecesary columns
+delete columns volumes_attached serverid status volume_type name
+
+# Appending all datasets
+default dset openstack.VMCPU
+append openstack.VMRam to openstack.VMCPU
+append openstack.VMDisk to openstack.VMCPU
+append openstack.volumes to openstack.VMCPU
+rename dset openstack.VMCPU to openstack.final
+
+# Final normalisation
+default dset openstack.final
+delete column serverid hypervisor_hostname flavor_name
+
+# Normalising Tags
+#option overwrite = yes
+
+#where ([environment] == "EXIVITY_NOT_FOUND" || [environment] == "") {
+#set environment to "Not Assigned"
+#}
+
+#where ([component] == "EXIVITY_NOT_FOUND" || [component] == "") {
+#set component to "Not Assigned"
+#}
+
+#where ([service] == "EXIVITY_NOT_FOUND" || [service] == "") {
+#set service to "Not Assigned"
+#}
+
+#where ([team] == "EXIVITY_NOT_FOUND" || [team] == "") {
+#set team to "Not Assigned"
+#}
+
+#where ([tenant] == "EXIVITY_NOT_FOUND" || [tenant] == "") {
+#set tenant to "Not Assigned"
+#}
+
+#option overwrite = no
+
+# Exporting Billing master data
+default dset openstack.final
+export openstack.final as "OpenStack/Billing/${dataDate}_OpenStack.csv"
+
+# Export Exceptions for troubleshooting
+#export openstack.final as "OpenStack/Exceptions/${dataDate}_OpenStack_Exceptions.csv"
+
+finish
+
+#option services = overwrite
+services {
+  effective_date = 20180901
+  service_type = automatic
+  description_col = service_name # column name
+  category_col = type_col # column with category value
+  instance_col = instance # the unique instance i.e. vm-id, username, etc
+  usages_col = service_desc # the column containing the name of the consumed service
+  set_rate_using = Rate
+  #set_fixed_price_using = node_fee
+  #set_cogs_using = Cogs # the column containing the CoG rate values
+  # cogs_col = BlendedRate # the column containing the CoG rate values
+  interval = individually
+  unit_label_col = Units # the column containing the unit label
+  consumption_col = UsageQuantity # the column containing the consumed quantity
+}

@@ -1,0 +1,309 @@
+#==================== Configuration ====================#
+#
+# Template USE Extractor for OpenStack Nova and Cinder
+#
+
+loglevel DEBUGX # adjust log detail to: DEBUG, INFO, WARN 
+
+public var host = "https://your.ip.or.domain" # IP or FQDN of keystone
+public var port = "5000" # Port for Keystone
+public var username = "username" # username with admin access
+public var password = "password"
+public var domain = "default" # Default domain
+public var project = "admin" # Default project
+public var region = "RegionOne" # Region of your OpenStack
+public var exportdir = "system/extracted/OpenStack"  # make sure this directory exists!
+var usage_export_file = "${exportdir}/${YEAR}${MONTH}${DAY}_OpenStack_VMs_${region}.csv"
+var tenant_export_file = "${exportdir}/${YEAR}${MONTH}${DAY}_OpenStack_tenants_${region}.csv"
+var volume_export_file = "${exportdir}/${YEAR}${MONTH}${DAY}_OpenStack_volumes_${region}.csv"
+
+# ===== CSV file structure start =====#
+
+csv servers = "${usage_export_file}"
+csv add_headers servers "serverid" "hostid" "vm_state" "created" "terminated_at" "updated" "flavor_id" "flavor_name" "ram" "cpu" "disk" "image_id" "instance_name" "availability_zone" "hypervisor_hostname" "user_id" "tenant_id" "volumes_attached" "Region"
+csv fix_headers servers
+
+csv tenants = "${tenant_export_file}"
+csv add_headers tenants "tenant_id" "name" "description"
+csv fix_headers tenants
+
+csv volumes = "${volume_export_file}"
+csv add_headers volumes "volumes_attached" "name" "size" "status" "volume_type" "server_id" "availability_zone" "Region"
+csv fix_headers volumes
+
+# ===== CSV file structure end =====#	
+
+#var body_data = "{ \"auth\": {\"identity\": {\"methods\": [\"password\"],\"password\": {\"user\": {\"name\": \"${username}\",\"domain\": { \"id\": \"${domain}\" },\"password\": \"${password}\"}}}}}"
+
+#var body_data3 = "{\"auth\": {\"identity\": {\"methods\": [\"password\"],\"password\": {\"user\": {\"id\": \"${username}\",\"password\": \"${password}\"}}},\"scope\":{\"domain\": {\"id\": \"default\"}}}}"
+
+#var body_data = "{\"auth\":{\"passwordCredentials\":{\"username\": \"${username}\",\"password\": \"${password}\"}}}"
+
+#================= Authorization section start =========#
+
+var body_data = "{ \"auth\": {\"identity\": {\"methods\": [\"password\"],\"password\": {\"user\": {\"name\": \"${username}\",\"domain\": { \"id\": \"${domain}\" },\"password\": \"${password}\"}}},\"scope\": {\"project\": {\"name\": \"${project}\",\"domain\": { \"id\": \"${domain}\" }}}}}"
+
+print "Authorization started."
+# Set up the HTTPS request parameters
+clear http_headers
+set http_header "Content-Type: application/json"
+set http_savefile "${exportdir}/json/token.json"
+set http_body data ${body_data}
+buffer token = http POST "${host}:${port}/v3/auth/tokens"
+#buffer token = http POST "${host}:${port}/v2.0/tokens"
+
+    if ( "${HTTP_STATUS_CODE}" != 201) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 201)
+        print {token}
+    }
+    #var token_id = $JSON{token}.[access].[token].[id]
+#print ${token_id}
+ http get_header "X-Subject-Token" as openstack_token # Saving header into variable
+# json format {token}
+#print {token}
+print "Authorization completed."
+
+# Getting NOVA endpoint based on Region
+
+var endpoint = "null"
+var endpointcinder = "null"
+foreach $JSON{token}.[token].[catalog] as catalog {
+
+var name = $JSON(catalog).[name]
+
+if ( "${name}" == "nova") { # Name of the Compute API
+foreach $JSON(catalog).[endpoints] as endpointcatalog {
+var regioncatalog = $JSON(endpointcatalog).[region_id]
+var interface = $JSON(endpointcatalog).[interface]
+if ("${regioncatalog}" == "${region}" && "${interface}" == "public") { # Change this
+var endpoint = $JSON(endpointcatalog).[url]
+}
+
+  }
+ }
+}
+
+foreach $JSON{token}.[token].[catalog] as catalog {
+
+var name = $JSON(catalog).[name]
+
+if ( "${name}" == "cinderv2") { # Name of the Storage API
+foreach $JSON(catalog).[endpoints] as endpointcatalog {
+var regioncatalog = $JSON(endpointcatalog).[region_id]
+var interface = $JSON(endpointcatalog).[interface]
+if ("${regioncatalog}" == "${region}" && "${interface}" == "public") { # Change this
+var endpointcinder = $JSON(endpointcatalog).[url]
+}
+
+  }
+ }
+}
+
+print Endpoint used is: ${endpoint}
+print Cinder Endpoint used is: ${endpointcinder}
+
+#================= Authorization section end ============#
+
+#================= Extract Tenants  ============#
+var next_link = "${host}:${port}/v2.0/tenants/"
+
+loop tenant_loop {
+    var previous_link = ${next_link}
+	# Set up the HTTPS request parameters
+    clear http_headers
+    set http_header "Content-Type: application/json"
+	set http_header "X-Auth-Token: ${openstack_token}"
+    #set http_header "X-Auth-Token: ${token_id}"
+    set http_savefile "${exportdir}/json/tenants.json"
+    buffer tenants_response = http GET ${next_link}
+    #buffer servers = http GET "${host}:${port}/v3/services"
+    #buffer servers = http GET "${host}:${port}/v3/endpoints"
+
+    if ( "${HTTP_STATUS_CODE}" != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        json format {tenants_response}
+        print {tenants_response}
+    }
+#json format {tenants_response}
+#print {tenants_response}
+foreach $JSON{tenants_response}.[tenants] as tenant {
+
+    csv write_field "tenants" $JSON(tenant).[id]
+    csv write_field "tenants" $JSON(tenant).[name]
+    csv write_field "tenants" $JSON(tenant).[description]
+}
+
+
+var link = $JSON{tenants_response}.[tenants_links]
+
+if ("${link}" != "EXIVITY_NOT_FOUND") {
+foreach $JSON{tenants_response}.[tenants_links] as tenant_link {
+    var next_link = $JSON(tenant_link).[href]
+}
+}
+else {
+var next_link = "EXIVITY_NOT_FOUND"
+}
+
+ #   print ${next_link}
+    # print next_link
+    # skip if we don't have a next_link
+    if ("${next_link}" == "EXIVITY_NOT_FOUND" || "${previous_link}" == "${next_link}") {
+     exit_loop
+    } else {
+        # replace http for https
+        var next_link = (@CONCAT("https://",@SUBSTR("${next_link}", 8)))
+     #   print Retrieving next page of results
+     #   print ${next_link}
+    }
+
+discard {tenants_response}
+
+}
+csv close "tenants"
+
+
+#================= Tenants Extracted ============#
+
+#================= Extract VMs  ============#
+var next_link = "${endpoint}/servers/detail?all_tenants=1"
+
+loop vm_loop {
+	# Set up the HTTPS request parameters
+    clear http_headers
+    set http_header "Content-Type: application/json"
+	set http_header "X-Auth-Token: ${openstack_token}"
+    #set http_header "X-Auth-Token: ${token_id}"
+    set http_savefile "${exportdir}/json/servers.json"
+    #buffer servers = http GET "${host}:${port}/v2.0/tenants/"
+    #buffer servers = http GET "${host}:${port}/v3/services"
+    #buffer servers = http GET "${host}:${port}/v3/endpoints"
+    buffer servers_response = http GET ${next_link}
+
+    if ( "${HTTP_STATUS_CODE}" != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        json format {servers_response}
+        print {servers_response}
+    }
+#json format {servers_response}
+#print {servers_response}
+
+foreach $JSON{servers_response}.[servers] as server {
+    foreach $JSON(server).[links] as serv {
+        var rel = $JSON(serv).[rel]
+        if (${rel} == "self") {
+        var server_id = $JSON(serv).[href]
+        #print ${server_id}
+        }
+    }
+    basename ${server_id} as serverid
+    var osdisk = "EXIVITY_NOT_FOUND"
+    csv write_field "servers" ${serverid}
+    csv write_field "servers" $JSON(server).[hostId]
+    csv write_field "servers" $JSON(server).[OS-EXT-STS:vm_state]
+    csv write_field "servers" $JSON(server).[created]
+    csv write_field "servers" $JSON(server).[OS-SRV-USG:terminated_at]
+    csv write_field "servers" $JSON(server).[updated]
+    var flavorid = $JSON(server).[flavor].[id]
+    csv write_field "servers" ${flavorid}
+    # Get flavor information
+    buffer flavor_response = http GET "${endpoint}/flavors/${flavorid}"
+    
+    foreach $JSON{flavor_response} as flavor {
+    csv write_field "servers" $JSON(flavor).[name]
+	var ram = $JSON(flavor).[ram]
+	var ram = (${ram} / 1024) # convert to GB
+    csv write_field "servers" ${ram}
+    csv write_field "servers" $JSON(flavor).[vcpus]
+    csv write_field "servers" $JSON(flavor).[disk]
+    }
+    
+    csv write_field "servers" $JSON(server).[image].[id]
+    csv write_field "servers" $JSON(server).[name]
+    csv write_field "servers" $JSON(server).[OS-EXT-AZ:availability_zone]
+    csv write_field "servers" $JSON(server).[OS-EXT-SRV-ATTR:hypervisor_hostname]
+    csv write_field "servers" $JSON(server).[user_id]
+    csv write_field "servers" $JSON(server).[tenant_id]
+    #csv write_field "servers" $JSON(server).[metadata].[environment] # change for your desired tag
+    #csv write_field "servers" $JSON(server).[metadata].[component] # change for your desired tag
+    #csv write_field "servers" $JSON(server).[metadata].[service] # change for your desired tag
+    #csv write_field "servers" $JSON(server).[metadata].[team] # change for your desired tag
+    
+    foreach $JSON(server).[os-extended-volumes:volumes_attached] as disk {
+        var osdisk = $JSON(disk).[id]
+
+    }
+    #print ${osdisk}
+    csv write_field "servers" ${osdisk}
+    csv write_field "servers" ${region}
+}
+
+var link = $JSON{servers_response}.[servers_links]
+
+if ("${link}" != "EXIVITY_NOT_FOUND") {
+foreach $JSON{servers_response}.[servers_links] as server_link {
+    var next_link = $JSON(server_link).[href]
+}
+}
+else {
+var next_link = "EXIVITY_NOT_FOUND"
+}
+
+    # print next_link
+    # skip if we don't have a next_link
+    if ("${next_link}" == "EXIVITY_NOT_FOUND") {
+    # print "no next link, we can finish."
+     exit_loop
+    } else {
+        # replace http for https
+        var next_link = (@CONCAT("https://",@SUBSTR("${next_link}", 8)))
+       # print Retrieving next page of results
+       # print ${next_link}
+    }
+discard {servers_response}
+
+}
+csv close "servers"
+
+#================= VMs Extracted  ============#
+
+#================= Extract Storage  ============#
+	# Set up the HTTPS request parameters
+    clear http_headers
+    set http_header "Content-Type: application/json"
+	set http_header "X-Auth-Token: ${openstack_token}"
+    #set http_header "X-Auth-Token: ${token_id}"
+    set http_savefile "${exportdir}/json/storage.json"
+    #buffer servers = http GET "${host}:${port}/v2.0/tenants/"
+    #buffer servers = http GET "${host}:${port}/v3/services"
+    #buffer servers = http GET "${host}:${port}/v3/endpoints"
+    #"volumes_attached" "name" "size" "status" "volume_type"
+    buffer storage_response = http GET "${endpointcinder}/volumes/detail?all_tenants=1" # Working
+#
+    if ( "${HTTP_STATUS_CODE}" != 200) {
+		print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        json format {storage_response}
+        print {storage_response}
+    }
+#json format {storage_response}
+#print {storage_response}
+foreach $JSON{storage_response}.[volumes] as volume {
+    var serverdisk = "EXIVITY_NOT_FOUND"
+    csv write_field "volumes" $JSON(volume).[id]
+    csv write_field "volumes" $JSON(volume).[name]
+    csv write_field "volumes" $JSON(volume).[size]
+    csv write_field "volumes" $JSON(volume).[status]
+    csv write_field "volumes" $JSON(volume).[volume_type]
+    foreach $JSON(volume).[attachments] as diskserver {
+        var serverdisk = $JSON(diskserver).[server_id]
+    }
+    csv write_field "volumes" ${serverdisk}
+    csv write_field "volumes" $JSON(volume).[availability_zone]
+    csv write_field "volumes" ${region}
+}
+csv close "volumes"
+discard {storage_response}
+
+#================= Storage Extracted  ============#
+print All information retrieved
+terminate
