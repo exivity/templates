@@ -5,7 +5,7 @@ option overwrite = NO
 # Import usage from vCloud extracts
 #AdminVm
 # vCPUS
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud alias vcpus options {
+import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias vcpus options {
     pattern enabled
     ignore "RamMB" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "vmVAppName" "vmVAppId" "guestOs" "vmNetworkName" "vmCatalogName" "vmHostName" "storageProfileName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
     #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
@@ -13,7 +13,7 @@ import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud a
 }
 
 # RAM
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud alias gbram options {
+import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias gbram options {
     pattern enabled
     ignore "numCPUs" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "vmVAppName" "vmVAppId" "guestOs" "vmNetworkName" "vmCatalogName" "vmHostName" "storageProfileName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
     #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
@@ -21,7 +21,7 @@ import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud a
 }
 
 # Disk
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud alias disk options {
+import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias disk options {
     pattern enabled
     ignore "RamMB" "numCPUs" "vmVAppName" "vmVAppId" "guestOs" "vmNetworkName" "vmCatalogName" "vmHostName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
     #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
@@ -30,7 +30,7 @@ import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud a
 }
 
 # OS
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud alias os options {
+import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias os options {
     pattern enabled
     ignore "RamMB" "numCPUs" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "vmVAppName" "vmVAppId" "vmNetworkName" "vmCatalogName" "vmHostName" "storageProfileName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
     #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
@@ -38,12 +38,12 @@ import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source mediacloud a
 }
 
 # Rates
-import "import/lookup/vCloud_rates.csv" source mediacloud alias rates # CHANGE THIS DIRECTORY/FILE TO YOUR OWN RATES
+#import "import/lookup/vCloud_rates.csv" source vcloud alias rates # CHANGE THIS DIRECTORY/FILE TO YOUR OWN RATES
 
 ## OS ##
-default dset mediacloud.os
+default dset vcloud.os
 # Aggregating results
-aggregate mediacloud.os notime vmName match org_id match org_name match
+aggregate vcloud.os notime vmName match org_id match org_name match
 
 # Normalise OS Values
 option overwrite = yes
@@ -67,7 +67,7 @@ where ([guestOs] =~ /.*Red Hat.*/) {  # CHANGE THIS
 # Normalising columns
 option overwrite = no
 create column Units value "OS"
-#create column Rate value 1
+create column Rate value 1
 create column cogs
 create column Category value "vCloud Consumption"
 rename column vmName to instance
@@ -78,14 +78,14 @@ create column service_desc
 set service_desc as service_name
 
 ## RAM ##
-default dset mediacloud.gbram
+default dset vcloud.gbram
 # Aggregating results
-aggregate mediacloud.gbram notime vmName match org_id match org_name match
+aggregate vcloud.gbram notime vmName match org_id match org_name match
 
 # Normalising columns
 option overwrite = no
 create column Units value "GB"
-#create column Rate value 1
+create column Rate value 1
 create column cogs
 # Converting RAM to GB
 calculate column RamGB as column RamMB / value 1024
@@ -98,14 +98,14 @@ create column service_desc
 set service_desc as service_name
 
 ## VCPUS ##
-default dset mediacloud.vcpus
+default dset vcloud.vcpus
 # Aggregating results
-aggregate mediacloud.vcpus notime vmName match org_id match org_name match
+aggregate vcloud.vcpus notime vmName match org_id match org_name match
 
 # Normalising columns
 option overwrite = no
 create column Units value "vCPU"
-#create column Rate value 1
+create column Rate value 1
 create column cogs
 rename column numCPUs to Usage
 create column Category value "vCloud Consumption"
@@ -115,40 +115,41 @@ create column service_name value "vCPU"
 create column service_desc
 set service_desc as service_name
 
-## STORAGE ##
-default dset mediacloud.disk
+## DISK ##
+default dset vcloud.disk
 # Aggregating results
-aggregate mediacloud.disk notime vmName match org_id match org_name match AllocatedDiskSize sum
+aggregate vcloud.disk notime vmName match org_id match org_name match AllocatedDiskSize sum
 
 # Normalising columns
 option overwrite = no
 create column Units value "GB"
-#create column Rate value 1
+create column Rate value 1
 create column cogs
 rename column AllocatedDiskSize to Usage
 create column Category value "vCloud Consumption"
 create mergedcolumn instance separator "-" from vmName HardDiskName
 # Creating Services
-create column service_name value "Storage (GB)"
+create column service_name value "Disk (GB)"
 create column service_desc
 set service_desc as service_name
 
 # Appending datasets
-rename dset mediacloud.gbram to mediacloud.vcloud
-append mediacloud.os to mediacloud.vcloud
-append mediacloud.vcpus to mediacloud.vcloud
-append mediacloud.disk to mediacloud.vcloud
+rename dset vcloud.gbram to vcloud.final
+default dset vcloud.final
+append vcloud.os to vcloud.final
+append vcloud.vcpus to vcloud.final
+append vcloud.disk to vcloud.final
 
 # Correlating service rates
-default dset mediacloud.vcloud
-correlate Rate using service_name assuming mediacloud.rates
+#default dset vcloud.final
+#correlate Rate using service_name assuming vcloud.rates
 set cogs as Rate
 
 #delete unnecesary columns
 delete columns org_id VirtualMachineId RamMB isVAppTemplate vdcHref vmName storageProfileName HardDiskName power_state EXIVITY_AGGR_COUNT
 
 # Export dataset
-export mediacloud.vcloud as "vCloud/Invoice/${dataDate}_Vcloud_Report"
+export vcloud.final as "vCloud/Invoice/${dataDate}_Vcloud_Report"
 
 finish
 
