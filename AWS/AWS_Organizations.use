@@ -1,0 +1,144 @@
+##########################################################################################
+#
+# This Extractor Template obtains AccountID to Name lookup data from AWS Organizations
+# =======================================================================================
+#
+# The data obtained from this Extractor will typically be combined with Extracted AWS 
+# billing data (i.e. using the AWS CUR Extractor Template). Both files will be imported
+# into an Transformer to enrich AWS billing records with AWS Organizational data.
+#
+# For more information about the AWS Organizations API, please consult the following URL:
+# - https://docs.aws.amazon.com/organizations/latest/APIReference/Welcome.html
+#
+# When executing this script, it assumes two arguments:
+# - FROM and TO date in: yyyyMMdd format
+#
+# NOTE: FROM and TO date should not overlap more then 1 month.
+#		In case it does overlap 1 month, it will reset the FROM
+#		date to the last day of the FROM month. And the TO date
+#		to the first day of the TO month. Support for overlapping
+#		months will be included in a future release.	
+#                                                                                							
+#########################################################################################
+
+if (${ARGC} == 0) {
+    print This script requires a yyyyMMdd parameter
+    terminate with error
+} else {
+	var today = ${ARG_1}
+}
+
+# Validate the date formats
+match date "^([0-9]{8})$" ${today}
+if (${date.STATUS} != MATCH) {
+	print Argument 1 error: ${today} is not in today format
+	terminate with error
+}
+
+# Extract the Year Month
+match yearmonth "^([0-9]{6})[0-9]{2}" ${today}
+if (${yearmonth.STATUS} != MATCH) {
+	print Could not extract year and month from the supplied date (${today})
+	terminate with error 
+} else {
+	var yearmonth = ${yearmonth.RESULT}
+}
+
+    # Add a month to the date
+    match year "^([0-9]{4})" ${ARG_1}
+    var end_year = ${year.RESULT}
+    match month "^[0-9]{4}([0-9]{2})" ${ARG_1}
+    var end_month = ${month.RESULT}
+    
+    if (${end_month} < 12) {
+        var end_month += 1
+    } else {
+        var end_year += 1
+        var end_month = 01
+    }
+    # Generate the output directory name
+    match month_dir "^([0-9]{6})" ${ARG_1}
+    var month_dir = ${month_dir.RESULT} 
+
+# Variables
+# Your AWS API access key
+public var access_key = "your-app-key"
+# Your AWS API secret key
+public var secret_key = "your-app-secret"
+# Script defaults
+var AWS_Service = "organizations"
+var AWS_Region = "us-east-1"
+# month_dir is set by the generate_date_info() subroutine
+var save_path = "system/extracted/aws/${month_dir}"
+# Initial body data (it will be updated if we have a ContinuationToken)
+var data1 = "{}"
+
+# Create CSV format
+  var organizations_export_file = "${save_path}/organizations/organizations.csv"
+  csv "organization" = "${organizations_export_file}"
+  csv add_headers "organization" Id Name Status
+  csv fix_headers "organization"
+
+loop organization_loop {
+    var HTTP_Method = "POST"
+    var query_params            # Empty variable
+    var host = "organizations.${AWS_Region}.amazonaws.com"
+    var date = "${OSI_TIME_UTC}"
+    hash sha256 data1 as hashed_data1
+    var canonical_headers = "content-type:application/x-amz-json-1.1${NEWLINE}host:${host}${NEWLINE}x-amz-date:${date}${NEWLINE}x-amz-target:AWSOrganizationsV20161128.ListAccounts${NEWLINE}"
+    var signed_headers = "content-type;host;x-amz-date;x-amz-target"
+    var canonical_request = "${HTTP_Method}${NEWLINE}/${NEWLINE}${query_params}${NEWLINE}${canonical_headers}${NEWLINE}${signed_headers}${NEWLINE}${hashed_data1}"
+    hash sha256 canonical_request as hashed_canonical_request
+    # Extract the yyyyMMdd from the UTC time
+    match yyyyMMdd "(.{8})" ${date}
+    var yyyyMMdd = "${yyyyMMdd.RESULT}"
+    var string_to_sign = "AWS4-HMAC-SHA256${NEWLINE}${date}${NEWLINE}${yyyyMMdd}/${AWS_Region}/${AWS_Service}/aws4_request${NEWLINE}${hashed_canonical_request}"
+    var signature = "${string_to_sign}"
+    
+    AWS_sign_string signature using ${secret_key} ${yyyyMMdd} ${AWS_Region} ${AWS_Service}
+    var credential_scope = "${yyyyMMdd}/${AWS_Region}/${AWS_Service}/aws4_request"
+    var auth_header = "Authorization: AWS4-HMAC-SHA256 Credential=${access_key}/${credential_scope}, SignedHeaders=${signed_headers}, Signature=${signature}"
+    set http_header ${auth_header}
+    set http_header "x-amz-date: ${date}"
+    set http_header "host: ${host}"
+    set http_header "accept-encoding: identity"
+    set http_header "user-agent: aws-cli/1.16.273 Python/3.6.0 Windows/10 botocore/1.13.9"
+    set http_header "content-type: application/x-amz-json-1.1"
+    set http_header "x-amz-target: AWSOrganizationsV20161128.ListAccounts"
+    set http_header "Accept-Encoding: identity"
+    set http_header "content-length: ${data1.LENGTH}"
+    set http_body data ${data1}
+    buffer organizations = http POST https://${host}/
+    
+    if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {organizations} 
+	print {organizations}
+	terminate
+    }
+    print {organizations}
+
+    foreach $JSON{organizations}.[Accounts] as this_org
+    {
+    	# Define the fields to export to match the headers
+    	csv write_field organization $JSON(this_org).[Id]
+    	csv write_field organization $JSON(this_org).[Name]
+    	csv write_field organization $JSON(this_org).[Status]
+    }
+
+    var NextToken = $JSON{organizations}.[NextToken]
+    if ("${NextToken}" != "EXIVITY_NOT_FOUND") {
+        print ContinuationToken detected
+        var data1 = "{\"NextToken\": \"${NextToken}\"}"
+        #print ${data1}
+    }
+    else {
+        print No ContinuationToken detected, we can finish
+        exit_loop
+    }
+
+    clear http_headers
+}
+csv close "organization"
+terminate
