@@ -1,0 +1,191 @@
+loglevel INFO
+#################################################################
+# This USE script will download Prometheus metrics              #
+#                                                               #
+# This needs two parameters:
+# - from date and to in YYYYMMDD format
+# - If no parameter is given, it will assume today
+#
+# --------------------------------------------------------------#
+if (${ARGC} == 0) {
+	var today = ${YEAR}${MONTH}${DAY}
+}
+if (${ARGC} > 0) {
+# Validate the date formats
+	var today = ${ARG_1}
+	match date "^([0-9]{8})$" ${today}
+	if (${date.STATUS} != MATCH) {
+		print Argument 1 error: ${today} is not in today format YYYYMMDD
+		terminate
+	}
+}
+#
+# Set global configuration
+#
+public var prometheus_endpoint = "prometheus.hostname.local" # end point of the Prometheus API
+public var prometheus_port = "9090" # Port of the Prometheus API
+public var step = "1h" # aggregation step interval in seconds (s) minutes (m) or hours (h)
+public var exportdir = "system/extracted/prometheus" # default export folder on disk
+#
+#=================  End Configuration ==================#
+
+#=================  Date Formatting  ==================#
+#
+# Extract the start day, month and year fields from the dates
+#
+match day "^[0-9]{6}([0-9]{2})" ${today}
+if (${day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${today})
+	terminateterminate
+} else {
+	var day = ${day.RESULT}
+}
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${today}
+if (${month.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${today})
+	terminate
+} else {
+	var month = ${month.RESULT}
+}
+match year "^([0-9]{4})[0-9]{4}" ${today}
+if (${year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${today})
+	terminate
+} else {
+	var year = ${year.RESULT}
+}
+# define dataDate and start_time variables
+var dataDate = "${year}${month}${day}"
+var start_time = "${year}-${month}-${day}T00:00:00Z"
+if (${ARGC} > 1)
+{
+#
+# Extract the end day, month and year fields from the dates
+#
+	match next_day "^[0-9]{6}([0-9]{2})" ${ARG_2}
+	if (${next_day.STATUS} != MATCH) {
+		print Could not extract day from the supplied date (${ARG_2})
+		terminate
+	} else {
+		var next_day = ${next_day.RESULT}
+	}
+	match next_month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${ARG_2}
+	if (${next_month.STATUS} != MATCH) {
+		print Could not extract month from the supplied date (${ARG_2})
+		terminate
+	} else {
+		var next_month = ${next_month.RESULT}
+	}
+	match next_year "^([0-9]{4})[0-9]{4}" ${ARG_2}
+	if (${next_year.STATUS} != MATCH) {
+		print Could not extract year from the supplied date (${ARG_2})
+		terminate
+	} else {
+		var next_year = ${next_year.RESULT}
+	}
+# define end time for date range pulls
+	var end_time = "${next_year}-${next_month}-${next_day}T23:59:59Z"
+} else  {
+	var end_time = "${year}-${month}-${day}T23:59:59Z"
+}
+#
+#=================  End Date Formatting ==================#
+
+#=================  CSV Formatting ==================#
+#
+var usage_export_file = "${exportdir}/${dataDate}_prometheus_usage.csv"
+var metrics_export_file = "${exportdir}/${dataDate}_prometheus_metrics.csv"
+csv "usage" = ${usage_export_file}
+csv add_headers "usage" job instance metric timestamp metric_value
+csv fix_headers "usage"
+csv "metricaux" = ${metrics_export_file}
+csv add_headers "metricaux" metric type help unit
+csv fix_headers "metricaux"
+#
+#=================  End CSV Formatting ==================#
+
+#=================  Extracting from Prometheus ==================#
+#
+# Get Target instance and jobs
+clear http_headers
+buffer targets = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/targets"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {targets} 
+	print {targets}
+	terminate with error
+}
+
+foreach $JSON{targets}.[data].[activeTargets] as this_target {
+	print ------------------------------------------------------------------------------------------
+	print JOB: $JSON(this_target).[labels].[job] Instance: $JSON(this_target).[labels].[instance]
+	var instance = $JSON(this_target).[labels].[instance]
+	var job = $JSON(this_target).[labels].[job]
+
+  # Getting metrics for the instance/job combination
+	var metrics_total = ""
+	var target_instance = "match_target={instance='${instance}',job='${job}'}"
+	uri encode target_instance
+	clear http_headers
+	print Retrieving Metrics for ${job}:${instance}...
+	buffer metrics = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/targets/metadata?${target_instance}"
+	if (${HTTP_STATUS_CODE} != 200) {
+		print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+		print The server response was:
+		json format {metrics} 
+		print {metrics}
+		terminate with error
+	}
+
+	foreach $JSON{metrics}.[data] as this_metric {
+		var metric = $JSON(this_metric).[metric]
+		if (${metric} != "EXIVITY_NOT_FOUND") {
+			csv write_field metricaux ${metric}
+			csv write_field metricaux $JSON(this_metric).[type]
+			csv write_field metricaux $JSON(this_metric).[help]
+			csv write_field metricaux $JSON(this_metric).[unit]
+			# Quering each metric of the job/instance combination
+			# print Querying Data for each metric...
+			var query_metric = "query=${metric}{instance='${instance}',job='${job}'}"
+			uri encode query_metric
+			clear http_headers
+			# Alternative query with start_time
+			buffer query = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/query_range?start=${start_time}&end=${end_time}&step=${step}&${query_metric}&"
+
+			if (${HTTP_STATUS_CODE} != 200) {
+				print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+				print The server response was:
+				json format {query} 
+				print {query}
+				terminate with error
+			}
+			foreach $JSON{query}.[data].[result] as this_query {
+				foreach $JSON(this_query).[values] as this_result {
+					# write usage record
+					csv write_field usage ${job}
+					csv write_field usage ${instance}
+					csv write_field usage ${metric}
+					foreach $JSON(this_result) as this_result2 {
+						if (${this_result2.COUNT} == 1) {
+							var timestamp = $JSON(this_result2).[]
+							# write the metric timestamp for this usage record
+							csv write_field usage ${timestamp}
+						}
+						if (${this_result2.COUNT} == 2) {
+							var metric_value = $JSON(this_result2).[]
+							if ("${metric_value}" == "") {
+								var metric_value = 0
+							}
+							# write the metric value for this usage record
+							csv write_field usage ${metric_value}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+csv close "usage"
+print All information retrieved!
+#=================  End of Extracting ==================#

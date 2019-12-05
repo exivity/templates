@@ -1,0 +1,51 @@
+# Set run time options
+option loglevel = INFO
+
+# Importing prometheus metrics info
+import "system/extracted/prometheus/${dataDate}_prometheus_metrics.csv" source prometheus alias metrics
+# Importing prometheus monitoring data
+import "system/extracted/prometheus/${dataDate}_prometheus_usage.csv" source prometheus alias usage
+
+# Normalising metrics dset
+rename column metric to service_key
+rename column help to service_name
+# fill empty units
+set unit to "Units"
+# create category column
+capitalise values in column type
+create column data_source value "Prometheus"
+create mergedcolumn resource_category separator " - " from data_source type
+delete column data_source
+
+# normalize usage dset
+default dset prometheus.usage
+rename column metric to service_key
+rename column metric_value to quantity
+
+# remove timestamps and aggregate records 
+delete column timestamp
+aggregate prometheus.usage notime instance match service_key match quantity sum
+set quantity = ([quantity] / [EXIVITY_AGGR_COUNT])
+
+# create dummy rate column
+create column rate value 1 # Set default rate for service
+create column cogs value 0.8 # Set default cogs for service
+# Correlating service_name
+correlate resource_category service_name unit using service_key assuming prometheus.metrics
+create column interval value "individually"
+
+finish
+# option services = overwrite
+services {
+ 	effective_date = 20190101
+	service_type = automatic
+	description_col = service_name
+	category_col = resource_category
+	instance_col = instance
+	usages_col = service_key
+	set_rate_using = rate  # same for rate_col
+	set_cogs_using = cogs # same for cogs_col
+	interval_col  = interval
+	unit_label_col = unit 
+	consumption_col = quantity
+}
