@@ -1,0 +1,133 @@
+###################################################################
+#
+# Example Extractor to obtain vdisk configurations from Hedvig API  
+#                                           
+###################################################################
+# Hostname of the Hedvig server
+public var hedvig_host = "http://hedvig.hostname.local"
+# Hedvig cluster name
+public var hedvig_cluster = "name_cluster"
+# User account with access to reading all vdisks thru REST API
+public var username = "username"  
+# The password that goes with above user name
+public var password = "password"
+# loglevel 0
+var JSON_dir = "system/extracted/hedvig/json"
+var CSV_dir = "system/extracted/hedvig"
+var authJSON = "${JSON_dir}/auth.json"
+var vdiskJSON = "${JSON_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_vdisk.json"
+var clusterJSON = "${JSON_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_cluster.json"
+var vdisk_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_vdisk.csv"
+var cluster_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_vdisk.csv"
+#
+#=================  End Configuration ==================#
+#/ Get an token from Hedvig 
+print "Obtaining Session ID from Hedvig..."
+# Set up the HTTP request parameters
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_body data "request={type:Login, category:UserManagement, params:{userName:'${username}', password:'${password}', cluster:'${hedvig_cluster}'}}"
+set http_savefile "${authJSON}"
+buffer token = http POST "${hedvig_host}/rest"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    print The server response was:
+    json format {token} 
+    print {token}
+    terminate with error
+}
+print "Successfully authenticated!"
+# Create a variable called ${session_id} from the auth token in {token}
+var session_id = "$JSON{token}.[result].[sessionId]"
+
+###############
+#
+# VDISK INFO
+#
+###############
+csv "vdisk_csv" = ${vdisk_file}
+csv add_headers "vdisk_csv" replicationFactor clusteredFileSystem backup replicationPolicy deduplication 
+csv add_headers "vdisk_csv" targetLocations consistency blockSize scsi3pr vDiskName cacheEnabled size.units 
+csv add_headers "vdisk_csv" size.value  encryption createdBy diskType compressed residence isClone tenant status
+# ===============
+# may add additional headers in case we need to  obtain dedup values or other disk details
+# csv add_headers "vdisk_csv" dedup.total.units dedup.total.value dedup.saved.units dedup.saved.value dedup.tddc.units dedup.tddc.value
+# ===============
+csv fix_headers "vdisk_csv"
+
+# Get all virtual disks
+clear http_headers
+set http_savefile "${vdiskJSON}"
+var vdisk_request = "request={type:ListVirtualDisks, category:VirtualDiskManagement, sessionId='${session_id}'}"
+uri encode vdisk_request
+buffer vdisks = http get "${hedvig_host}/rest/?${vdisk_request}"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    print The server response was:
+    json format {vdisks} 
+    print {vdisks}
+    terminate with error
+}
+
+foreach $JSON{vdisks}.[result].[disks] as this_vdisk {
+    # ==============================================
+    # Optionally: may request vDisk details here 
+    # to obtain dedup savings, targetLocations etc
+    # ==============================================
+    #
+    # var = vdisk_name = $JSON(this_vdisk).[vDiskName]
+    # clear http_headers
+    # set http_savefile "${vdiskJSON}"
+    # var vdisk_details = "{type:VirtualDiskDetails, category:VirtualDiskManagement, params:{virtualDisk:'${vdisk_name}'}, sessionId:'${session_id}'}"
+    # uri encode vdisk_name
+    # buffer vdisks = http get "${hedvig_host}/rest/?${vdisk_name}"
+    #
+    # ==============================================
+    # csv write_field vdisk_csv ${metric}
+    csv write_field vdisk_csv $JSON(this_vdisk).[replicationFactor]
+    csv write_field vdisk_csv $JSON(this_vdisk).[clusteredFileSystem]
+    csv write_field vdisk_csv $JSON(this_vdisk).[backup]
+    csv write_field vdisk_csv $JSON(this_vdisk).[replicationPolicy]
+    csv write_field vdisk_csv $JSON(this_vdisk).[deduplication]
+    # second 
+    csv write_field vdisk_csv $JSON(this_vdisk).[targetLocations]
+    csv write_field vdisk_csv $JSON(this_vdisk).[consistency]
+    csv write_field vdisk_csv $JSON(this_vdisk).[blockSize]
+    csv write_field vdisk_csv $JSON(this_vdisk).[scsi3pr]
+    csv write_field vdisk_csv $JSON(this_vdisk).[vDiskName]
+    csv write_field vdisk_csv $JSON(this_vdisk).[cacheEnabled]
+    csv write_field vdisk_csv $JSON(this_vdisk).[size].[units]
+    # third
+    csv write_field vdisk_csv $JSON(this_vdisk).[size].[value]
+    csv write_field vdisk_csv $JSON(this_vdisk).[encryption]
+    csv write_field vdisk_csv $JSON(this_vdisk).[createdBy]
+    csv write_field vdisk_csv $JSON(this_vdisk).[diskType]
+    csv write_field vdisk_csv $JSON(this_vdisk).[compressed]
+    csv write_field vdisk_csv $JSON(this_vdisk).[residence]
+    csv write_field vdisk_csv $JSON(this_vdisk).[isClone]
+    csv write_field vdisk_csv $JSON(this_vdisk).[tenant]
+    csv write_field vdisk_csv $JSON(this_vdisk).[status]
+}
+csv close "vdisk_csv"
+
+###############
+#
+# CLUSTER INFO
+#
+###############
+#csv "cluster_csv" = ${cluster_file}
+#csv add_headers "cluster_csv" metric type help unit
+#csv fix_headers "cluster_csv"
+# Get all storage cluster information
+clear http_headers
+set http_savefile "${clusterJSON}"
+var cluster_request = "request={type:ClusterInformation, category:ClusterWatch, sessionId='${session_id}'}"
+uri encode cluster_request
+buffer vdisks = http get "${hedvig_host}/rest/?${cluster_request}"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    print The server response was:
+    json format {cluster_request} 
+    print {cluster_request}
+    terminate with error
+}
