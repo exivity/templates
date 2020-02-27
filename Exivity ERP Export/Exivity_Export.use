@@ -93,7 +93,7 @@ var accountsJSON = "${JSON_dir}/accounts.json"
 
 var export_file = "${CSV_dir}/${year}${month}_exivity_charges.csv"
 var services_file = "${CSV_dir}/${year}${month}_exivity_services.csv"
-var accounts_file = "${CSV_dir}/${year}${month}_exivity_accounts.csv"'
+var accounts_file = "${CSV_dir}/${year}${month}_exivity_accounts.csv"
 var invoice_date_file = "${CSV_dir}/${year}${month}_exivity_invoice_date.csv"
 #
 #=================  End Configuration ==================#
@@ -112,7 +112,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print The server response was:
 	json format {token} 
 	print {token}
-	terminate
+	terminate with error
 }
 print "Succesfully authenticated!"
 
@@ -134,7 +134,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print The server response was:
 	json format {reports} 
 	print {reports}
-	terminate
+	terminate with error
 }
 set http_savefile "${export_file}"
 buffer charges = http GET "https://${exivity_host}:${api_port}/v1/reports/${report_id}/run?start=${year}${month}01&end=${year}${month}31&timeline=month&depth=${depth}&include=account_name,service_description,servicecategory_name&format=csv&precision=highest&consolidated=1&progress=0"
@@ -143,7 +143,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print The server response was:
 	json format {charges} 
 	print {charges}
-	terminate
+	terminate with error
 }
 
 set http_savefile "${servicesJSON}"
@@ -153,7 +153,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print The server response was:
 	json format {services} 
 	print {services}
-	terminate
+	terminate with error
 }
 
 #
@@ -165,7 +165,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print The server response was:
 	json format {accounts} 
 	print {accounts}
-	terminate
+	terminate with error
 }
 
 # Get the services
@@ -176,7 +176,7 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print The server response was:
 	json format {services} 
 	print {services}
-	terminate
+	terminate with error
 }
 
 # Write the invoice period
