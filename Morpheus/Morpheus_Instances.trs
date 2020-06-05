@@ -1,0 +1,50 @@
+#############################
+#
+# Template Transformer for:
+# 
+# Morpheus Instances 
+#
+#############################
+
+# Import Morpheus data
+import "system/extracted/morpheus/${dataDate}_morpheus_usage.csv" source morpheus alias usage
+
+# sanitize null values
+where ([siteName]=="null") {
+  set siteName to "Unknown Site"
+} 
+where ([createdByUser]=="null") {
+  set createdByUser to "Unknown User"
+}
+where ([servicePlanName]=="null") {
+  set servicePlanName = @CONCAT("Unknown Service Plan (ID: ", [servicePlanId] ,")") 
+}
+where ([quantity]=="null") {
+  set quantity to 0
+}
+where ([pricePerUnit]=="null") {
+  set pricePerUnit to 0
+}
+
+# create the uage and rate columns
+create column consumed_units
+set consumed_units = [numUnits]*[quantity]
+create mergedcolumn service_key separator "-" from servicePlanId type
+capitalise values in column type 
+finish
+
+#option services = overwrite
+
+# creating services
+services {
+  service_type = automatic
+  description_col = type # column name
+  category_col = servicePlanName # column with category value
+  instance_col = instance_name # the unique instance i.e. vm-id, username, etc
+  usages_col = service_key # the column containing the name of the consumed service
+  set_rate_using = pricePerUnit # columns to pre-populate the rate
+  cogs_col = pricePerUnit # the column containing the CoG rate values
+  interval = individually
+  unit_label = "Hours" # the column containing the unit label
+  consumption_col = consumed_units # the column containing the consumed quantity
+}
