@@ -57,7 +57,10 @@ create mergedcolumn service_key from "resource_id"
 create mergedcolumn instance from resourceUri /.*\/(.*)$/
 split resourceUri using / retaining 5
 rename column resourceUri_split1 to resourceGroup
-capitalize values in columns resourceGroup
+uppercase values in column resourceGroup
+uppercase values in column subscriptionName
+uppercase values in column customer_name
+lowercase values in column instance
 
 # Set dummy values for columns that don't have a value set
 option overwrite = NO

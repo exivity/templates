@@ -61,7 +61,7 @@ create mergedcolumn resource_id2 separator " " from azure.csp_usage.resource_id 
 default dset azure.stack_rates
 
 # Calculating aggregated rates (in case of services with tiering)
-aggregate notime currency match chargeType	match  partnerId	match partnerName	match partnerBillableAccountId	match customerId	match domainName	match customerCompanyName	match invoiceNumber	match subscriptionId	match subscriptionName	match subscriptionDescription	match billingCycleType match orderId match serviceName	match serviceType	match resourceGuid match resourceName match region match consumedQuantity match unit match postTaxTotal  sum
+aggregate notime subscriptionId match resourceGuid match consumedQuantity match chargeStartDate match chargeEndDate match postTaxTotal  sum
 calculate column rate as column postTaxTotal / column consumedQuantity
 #export azure.stack_rates as "AzureCSP_Invoice/rates.csv"
 
@@ -122,7 +122,9 @@ create mergedcolumn instance from resourceUri /.*\/(.*)$/
 lowercase values in column instance
 split resourceUri using / retaining 5
 rename column resourceUri_split1 to resourceGroup
-lowercase values in column resourceGroup
+uppercase values in column resourceGroup
+uppercase values in column subscriptionName
+uppercase values in column customer_name
 
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
@@ -135,6 +137,7 @@ set resource_category to "Azure Generic Resources"
 set subscription_id to "One Time Resources"
 set instance as resource_name
 set instance to "Generic Instance Usage"
+uppercase values in columns customer_name
 # set instance as resource_nameOffice
 
 #create mergedcolumn Reseller separator " " from tier2MpnId ResellerName
@@ -145,7 +148,6 @@ create mergedcolumn Reseller separator " " from tier2MpnId
 #	set resourceGroup to "Office"
 #} 
 
-capitalize values in columns customer_name
 option overwrite = NO
 set resourceGroup to "ResourceGroup not available"
 

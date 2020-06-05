@@ -305,7 +305,7 @@ loop date_range ${date_diff} {
     			csv write_field "subscriptions" $JSON(this_subscription).[id]
     			csv write_field "subscriptions" $JSON(this_subscription).[offerId]
     			csv write_field "subscriptions" $JSON(this_subscription).[offerName]
-				  csv write_field "subscriptions" $JSON(this_subscription).[friendlyName]
+				csv write_field "subscriptions" $JSON(this_subscription).[friendlyName]
     			csv write_field "subscriptions" $JSON(this_subscription).[quantity]
     			csv write_field "subscriptions" $JSON(this_subscription).[unitType]
     			csv write_field "subscriptions" $JSON(this_subscription).[creationDate]

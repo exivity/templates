@@ -1,12 +1,3 @@
-#=========================== Readme ===========================#
-#
-#	This Transformer pre-processes the quantity/rates from both 
-# 	standard usage as well as the invoice CSP API.
-#
-#	This Transformer should be used together with the standard
-# 	EoM Transformer. 
-#
-
 option loglevel = DEBUGX
 #option embed = YES
 #
