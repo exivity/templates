@@ -1,0 +1,80 @@
+#=========================== Configuration ============================#
+#
+# This is a Oracle VM Manager REST API Extractor. It obtains basic 
+# VM information: 
+# - vm name,ram MiB, cpu count and power 
+#
+
+loglevel DEBUGX # adjust log detail to: DEBUG, INFO, WARN 
+
+# Change this value to your local Oracle VM Manager TCP Port
+public var hostname = "your-hostname"
+# Change this value to your local Oracle VM Manager TCP Port
+public var tcpport = "7002"
+# Username and password that is allowed to call the Oracle VM Manager REST API
+public var username = "your-username"
+# Username and password that is allowed to call the Oracle VM Manager REST API
+public var password = "your-password"
+var JSON_dir = "system/extracted/Oracle_VMManager/json" # directory should exist
+var CSV_dir = "system/extracted/Oracle_VMManager" # directory should exist
+var vms_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${hostname}_vm_inventory.csv" 
+#
+#=================  End Configuration ==================#
+
+# Definition of the csv files
+csv "vms_export" = ${vms_export_file}
+csv add_headers "vms_export" name description vmRunState cpuCount memory osType diskLimit
+csv fix_headers "vms_export"
+
+# End of definition of the csv files
+
+# Authenticating
+print "Authenticating to Oracle VM Manager..."
+
+# Set up the HTTP request parameters
+set http_username ${username}
+set http_password ${password}
+set http_authtype basic
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/json"
+set http_savefile "${JSON_dir}/http_savefile.json"
+buffer token = http POST "https://${hostname}:${tcpport}/ovm/core/wsapi/rest/login"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+
+discard {token}
+print "Succesfully authenticated."
+
+# Getting VMs
+print "Getting VMs..."
+
+buffer vms = http GET "https://${hostname}:${tcpport}/ovm/core/wsapi/rest/Vm"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {vms} 
+	print {vms}
+	terminate
+}
+
+# Loop through the vms and save to csv
+foreach $JSON{vms} as this_vm {
+	csv write_field vms_export $JSON(this_vm).[name]
+	csv write_field vms_export $JSON(this_vm).[description]
+	csv write_field vms_export $JSON(this_vm).[vmRunState]
+	csv write_field vms_export $JSON(this_vm).[cpuCount]
+	var memory = $JSON(this_vm).[memory]
+	var memory = (${memory} / 1024) # Convert memory to GB
+	csv write_field vms_export ${memory}
+	csv write_field vms_export $JSON(this_vm).[osType]
+	csv write_field vms_export $JSON(this_vm).[diskLimit]
+}
+
+discard {vms}
+print "VMs retrieved"
+terminate

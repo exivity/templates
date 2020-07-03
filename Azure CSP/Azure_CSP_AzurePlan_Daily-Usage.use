@@ -1,0 +1,210 @@
+#################################################################
+# 
+#  This USE script will download the Azure CSP:
+#
+#	- Billing Data
+#	- Azure Plan Usage Data    
+#
+#  Please consult https://docs.exivity.com/ for more info.
+#
+# ==========================================================
+
+#==================== Configuration ====================#
+#
+
+# For testing and maintenance purposes
+# If any online_customers or online_subscriptions are set to no then the data is
+# retrieved from local JSON files on disk. These files are created when run with
+# the options set to yes
+#
+# If either of those options are set to 'yes' then get_token must
+# also be set to yes
+#
+loglevel DEBUGX
+
+# Application ID of the Partner Center Web Application
+public var client_id = "guid-of-your-partner-center-application" 
+# secret that belongs to the client application GUID
+public var secret = "secret-belonging-to-client-id"
+# Your CSP domain, usually xxxx.onmicrosoft.com
+public var MyDomain = "YourDomain.onmicrosoft.com"
+# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var exportdir = "system/extracted/AzureCSP"
+# Currency of the account
+public var currency = "EUR"
+# current/previous
+public var period = "current"
+
+var YEAR1 = ${YEAR}
+var MONTH1 = ${MONTH}
+
+if ("${period}" == "previous") {
+if (${MONTH} == 01) {
+var MONTH1 = 12
+var YEAR1 -= 1
+} else {
+var MONTH1 -= 1
+}
+}
+
+print Calculating for month: ${MONTH1}
+
+# default variables
+var get_token = yes
+
+# default path variables
+var onetime_export_file = "${exportdir}/csp_usage_azureplan_${YEAR1}${MONTH1}.csv"
+var json_filedir = "${exportdir}/json"
+
+#=================  End Configuration ==================#
+
+  csv "onetime" = "${onetime_export_file}"
+  csv add_headers "onetime" partnerId partnerName customerId customerName customerDomainName invoiceNumber productId skuId availabilityId skuName productName publisherName publisherId subscriptionId subscriptionDescription chargeStartDate chargeEndDate usageDate meterType meterCategory meterId meterSubCategory meterName meterRegion unitOfMeasure resourceLocation consumedService resourceGroup resourceUri tags additionalInfo serviceInfo1 serviceInfo2 customerCountry mpnId resellerMpnId chargeType unitPrice quantity unitType billingPreTaxTotal billingCurrency pricingPreTaxTotal pricingCurrency entitlementId entitlementDescription pcToBCExchangeRate pcToBCExchangeRateDate effectiveUnitPrice rateOfPartnerEarnedCredit billingProvider
+  csv fix_headers "onetime"
+
+  if (${get_token} == yes)
+  {
+  	# Get an AD token from login.windows.net
+      # # # print "Getting AD Token"
+  	
+  	# Set up the HTTP request parameters
+  	set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=https%3A%2F%2Fgraph.windows.net"
+  	# ====== Possible alternative auth method with user/pass if required ===== #
+  	# set http_body data "resource=https%3A%2F%2Fapi.partnercenter.microsoft.com&client_id=${client_id}&grant_type=password&username=${username}&password=${password}&scope=openid&prompt=consent"
+  	# ======================================================================== #
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_savefile "${json_filedir}/http_savefile.json"
+  	# Get AD Token and cache it in a buffer called {token}
+  	buffer token = http POST "https://login.windows.net/${MyDomain}/oauth2/token"
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		# # # print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		# # # print The server response was:
+  		json format {token} 
+  		# # # print {token}
+  		terminate with error
+  	}
+  
+  	# Create a variable called ${access_token} from the AD token in {token}
+  	var access_token = $JSON{token}.[access_token]
+  	discard {token}
+  
+  	# Use the access_token to get an App_User token
+    # # # print "Getting AU Token"
+  	# Reset headers as we want to create a new Authorization: header
+  	clear http_headers
+  	
+  	# Set up the HTTP request parameters
+  	var partnerRoot = "https://api.partnercenter.microsoft.com"
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+  	set http_header "Authorization: Bearer ${access_token}"	
+  	set http_body data "grant_type=jwt_token"
+  
+  	# Get the new token into a buffer called {token}
+  	buffer token = http POST ${partnerRoot}/generatetoken
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		# # # print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+  		# # # print The server response was:
+  		json format {token} 
+  		# # # print {token}
+  		terminate with error
+  	}
+  
+  	# Create a variable called ${AUtoken} from the App+User token in {token}
+  	# 2017-07 - App+User is not needed. Setting AUToken to access_token
+  	var AUtoken = ${access_token}
+  	discard {token}
+  	# # # print ${AUtoken}
+  }
+  
+  #======== OBTAINING AZURE PLAN USAGE ==========#
+  #
+  
+  var address = "invoices/unbilled/lineitems?provider=onetime&invoicelineitemtype=usagelineitems&currencycode=${currency}&period=${period}"
+  loop InvoicesLoop {  
+# Use the AUtoken to get a list of invoices
+  # print "Getting Billing invoice list"
+  clear http_headers
+  set http_header "Accept: application/json"
+  set http_savefile "${json_filedir}/azureplan${InvoicesLoop.COUNT}.json"
+  set http_header "Authorization: Bearer ${AUtoken}"  
+  if (${InvoicesLoop.COUNT} > 1) {
+  set http_header "MS-ContinuationToken: ${ContinuationToken}"
+  }
+
+buffer invoices = http GET "${partnerRoot}/v1/${address}"
+  if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    print Exiting
+    terminate with error
+  }
+  
+  #json format {invoices} 
+  #print {invoices}
+    foreach $JSON{invoices}.[items] as this_invoice
+    {
+                       csv write_field onetime $JSON(this_invoice).[partnerId]
+                       csv write_field onetime $JSON(this_invoice).[partnerName]
+                       csv write_field onetime $JSON(this_invoice).[customerId]
+                       csv write_field onetime $JSON(this_invoice).[customerName]
+                       csv write_field onetime $JSON(this_invoice).[customerDomainName]
+                       csv write_field onetime $JSON(this_invoice).[invoiceNumber]
+                       csv write_field onetime $JSON(this_invoice).[productId]
+                       csv write_field onetime $JSON(this_invoice).[skuId]
+                       csv write_field onetime $JSON(this_invoice).[availabilityId]
+                       csv write_field onetime $JSON(this_invoice).[skuName]
+                       csv write_field onetime $JSON(this_invoice).[productName]
+                       csv write_field onetime $JSON(this_invoice).[publisherName]
+                       csv write_field onetime $JSON(this_invoice).[publisherId]
+                       csv write_field onetime $JSON(this_invoice).[subscriptionId]
+                       csv write_field onetime $JSON(this_invoice).[subscriptionDescription]
+                       csv write_field onetime $JSON(this_invoice).[chargeStartDate]
+                       csv write_field onetime $JSON(this_invoice).[chargeEndDate]
+                       csv write_field onetime $JSON(this_invoice).[usageDate]
+                       csv write_field onetime $JSON(this_invoice).[meterType]
+                       csv write_field onetime $JSON(this_invoice).[meterCategory]
+                       csv write_field onetime $JSON(this_invoice).[meterId]
+                       csv write_field onetime $JSON(this_invoice).[meterSubCategory]
+                       csv write_field onetime $JSON(this_invoice).[meterName]
+                       csv write_field onetime $JSON(this_invoice).[meterRegion]
+                       csv write_field onetime $JSON(this_invoice).[unitOfMeasure]
+                       csv write_field onetime $JSON(this_invoice).[resourceLocation]
+                       csv write_field onetime $JSON(this_invoice).[consumedService]
+                       csv write_field onetime $JSON(this_invoice).[resourceGroup]
+                       csv write_field onetime $JSON(this_invoice).[resourceUri]
+                       csv write_field onetime $JSON(this_invoice).[tags]
+                       csv write_field onetime $JSON(this_invoice).[additionalInfo]
+                       csv write_field onetime $JSON(this_invoice).[serviceInfo1]
+                       csv write_field onetime $JSON(this_invoice).[serviceInfo2]
+                       csv write_field onetime $JSON(this_invoice).[customerCountry]
+                       csv write_field onetime $JSON(this_invoice).[mpnId]
+                       csv write_field onetime $JSON(this_invoice).[resellerMpnId]
+                       csv write_field onetime $JSON(this_invoice).[chargeType]
+                       csv write_field onetime $JSON(this_invoice).[unitPrice]
+                       csv write_field onetime $JSON(this_invoice).[quantity]
+                       csv write_field onetime $JSON(this_invoice).[unitType]
+                       csv write_field onetime $JSON(this_invoice).[billingPreTaxTotal]
+                       csv write_field onetime $JSON(this_invoice).[billingCurrency]
+                       csv write_field onetime $JSON(this_invoice).[pricingPreTaxTotal]
+                       csv write_field onetime $JSON(this_invoice).[pricingCurrency]
+                       csv write_field onetime $JSON(this_invoice).[entitlementId]
+                       csv write_field onetime $JSON(this_invoice).[entitlementDescription]
+                       csv write_field onetime $JSON(this_invoice).[pcToBCExchangeRate]
+                       csv write_field onetime $JSON(this_invoice).[pcToBCExchangeRateDate]
+                       csv write_field onetime $JSON(this_invoice).[effectiveUnitPrice]
+                       csv write_field onetime $JSON(this_invoice).[rateOfPartnerEarnedCredit]
+                       csv write_field onetime $JSON(this_invoice).[billingProvider]
+                }
+                 var address = $JSON{invoices}.[links].[next].[uri]
+                 # # # print ${address}
+               if ("${address}" != "EXIVITY_NOT_FOUND") {
+                 var address = $JSON{invoices}.[links].[next].[uri]
+                 var ContinuationToken = $JSON{invoices}.[continuationToken]
+                 print The new address is ${address}
+               } else {
+                print End of Data Collection
+                exit_loop
+               }
+  #               discard {invoices}
+     }
+  csv close "onetime"
+  discard {invoices}
