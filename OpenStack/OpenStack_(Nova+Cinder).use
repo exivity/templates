@@ -6,6 +6,7 @@
 loglevel DEBUGX # adjust log detail to: DEBUG, INFO, WARN 
 
 public var host = "https://your.ip.or.domain" # IP or FQDN of keystone
+public var secure_ssl = "yes" # When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
 public var port = "5000" # Port for Keystone
 public var username = "username" # username with admin access
 public var password = "password"
@@ -45,6 +46,7 @@ var body_data = "{ \"auth\": {\"identity\": {\"methods\": [\"password\"],\"passw
 
 print "Authorization started."
 # Set up the HTTPS request parameters
+set http_secure ${secure_ssl}
 clear http_headers
 set http_header "Content-Type: application/json"
 set http_savefile "${exportdir}/json/token.json"

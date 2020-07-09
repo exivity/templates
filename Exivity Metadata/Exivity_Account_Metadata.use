@@ -18,6 +18,9 @@ public var api_port = "8002"
 public var username = "admin"  # The username that has access to read all account meta data
 public var password = "<User Password>" # The password that goes with above user name
 
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
+
 # use report settings
 public var field1 = "<Provide name of Field 1>" # the first metadata field
 public var field2 = "<Provide name of Field 2>" # the second metadata field
@@ -41,6 +44,8 @@ var metadata_file = "${CSV_dir}/exivity_metadata.csv"
 
 #/ Get an token from Exivity 
 print "Getting Exivity Account Metadata ..."
+
+set http_secure ${secure_ssl}
 
 # Set up the HTTP request parameters
 set http_header "Accept: application/json"

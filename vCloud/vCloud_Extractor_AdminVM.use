@@ -26,14 +26,17 @@ if (${Date} == ${Hour} ) {
 var API_Name = "adminVM"
 var version = "31.0" # check your API version
 
-public var host = "your-vcloud-portal-ip"
+public var host = "your-vcloud-portal-ip" # your vCloud Hostname or IP
 public var username = "username@system" # with @system to indicate the highest org in the hierarchy
-public var password = "your-vcloud-password"
+public var password = "your-vcloud-password" # password for system user
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
 public var exportdir = "system/extracted/vmWare"  # make sure this directory exists!
-public var usage_export_file = "${exportdir}/${API_Name}/${Date}_vCloud.csv"
-# directory should exist!
+public var usage_export_file = "${exportdir}/${API_Name}/${Date}_vCloud.csv" # directory should exist!
+
 
 #================= Authorization section start =========#
+set http_secure ${secure_ssl}
 var login = "${username}:${password}"
 encode base64 login
 print "Authorization started."

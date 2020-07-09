@@ -78,6 +78,9 @@ public var api_port = "8002"
 public var username = "admin"  # The username that has access to read the report
 public var password = "exivity" # The password that goes with above user name
 
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
+
 # use report settings
 public var report_id = "1" # The id of the report definition 
 public var depth = "2" # The account depth of the cost report
@@ -100,6 +103,8 @@ var invoice_date_file = "${CSV_dir}/${year}${month}_exivity_invoice_date.csv"
 
 #/ Get an token from Exivity 
 print "Getting Exivity Charges ..."
+
+set http_secure ${secure_ssl}
 
 # Set up the HTTP request parameters
 set http_header "Accept: application/json"

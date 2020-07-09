@@ -1,0 +1,173 @@
+#==================== Configuration ====================#
+#
+# This is a Zerto REST API Extractor. It obtains basic 
+# Zerto information
+# 
+#
+
+loglevel INFO # adjust log detail to: DEBUG, INFO, WARN 
+
+# Provide the Zerto hostname or IP address
+public var zerto_host = "Zerto host"
+# Provide the Zerto API port number
+public var zerto_port = "Zerto port"
+# Username which is allowed to call Zerto REST API
+public var username = "Zerto user"
+# Password for the username
+public var password = "Zerto password"
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
+
+set http_secure ${secure_ssl}
+
+var JSON_dir = "system/extracted/zerto/json" # directory should exist
+var CSV_dir = "system/extracted/zerto" # directory should exist
+var zertoJSON = "${JSON_dir}/zerto_vms.json"
+var zertJSON = "${JSON_dir}/zerto_vm.json"
+var zerto_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${HOUR}_${MINUTE}_zerto_inventory.csv" 
+
+#
+#=================  End Configuration ==================#
+
+
+#====================== Validation ======================#
+# Check if we have two parameters (from and to date)
+if (${ARGC} != 2)
+{
+    print This requires 2 argument, the from and to dates for which to collect usage data for, both in yyyyMMdd format
+    terminate with error
+} else {
+    var from_date = ${ARG_1}
+    var to_date = ${ARG_2}
+}
+# Validate the date formats
+gosub check_date(${from_date})
+gosub check_date(${to_date})
+var dataDate = ${from_date}
+# ========================================================
+#     This subroutine checks that its argument
+#     is an 8 digit decimal number
+# ========================================================
+subroutine check_date {
+    # Validate the format
+    match date "^([0-9]{8})$" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Error: the provided argument is not in yyyyMMdd format
+        terminate with error
+    }
+}
+
+#====================== Validation ======================#
+
+
+#=================  Date Formatting  ==================#
+
+# Extract the day, month and year fields from the dates
+match day "^[0-9]{6}([0-9]{2})" ${from_date}
+if (${day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${from_date})
+	terminate with error
+} else {
+	var day = ${day.RESULT}
+}
+
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${from_date}
+if (${day.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${from_date})
+	terminate with error
+} else {
+	var month = ${month.RESULT}
+}
+
+match year "^([0-9]{4})[0-9]{4}" ${from_date}
+if (${year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${from_date})
+	terminate with error
+} else {
+	var year = ${year.RESULT}
+}
+
+match day "^[0-9]{6}([0-9]{2})" ${to_date}
+if (${day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${to_date})
+	terminate with error
+} else {
+	var to_day = ${day.RESULT}
+}
+
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${to_date}
+if (${day.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${to_date})
+	terminate with error
+} else {
+	var to_month = ${month.RESULT}
+}
+
+match year "^([0-9]{4})[0-9]{4}" ${to_date}
+if (${year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${to_date})
+	terminate with error
+} else {
+	var to_year = ${year.RESULT}
+}
+
+# Start and End dates (YYYY-MM-DD)
+var start_date = "${year}-${month}-${day}"
+var end_date = "${to_year}-${to_month}-${to_day}"
+
+#=================  End Date Formatting ==================#
+
+
+#Authorisation
+print "Zerto Add Session API"
+var login = "${username}:${password}"
+encode base64 login
+# Set up the HTTP request parameters
+set http_header "Accept:application/json" 
+set http_header "Authorization:Basic ${login}"
+set http_header "Content-Type: application/JSON"	
+set http_savefile "${JSON_dir}/http_savefile.json"
+set http_body data "{\"AuthenticationMethod\": \"1\"}"
+# Calling Zerto session API
+buffer token = http POST "https://${zerto_host}:${zerto_port}/v1/session/Add"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+
+#clear http_headers
+
+set http_savefile ${zertoJSON}
+print Getting Zerto resources as ${zertoJSON}
+# This API will become deprecated - consider replacing with: https://zvm_ip:port/v1/reports/resources endpoint
+# see also: https://www.zerto.com/myzerto/knowledge-base/zerto-field-notice-ftn-20190115-end-of-support-for-selected-vmware-platforms-zerto-api-deprecations-in-next-release/
+buffer zrt = http GET "https://${zerto_host}:${zerto_port}/ZvmService/ResourcesReport/getSamples?fromTimeString=${start_date}&toTimeString=${end_date}&startIndex=0&count=5000"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Server response was ${HTTP_STATUS_CODE} (expected 200)
+	print The server response was:
+	json format {zrt} 
+	print {zrt}
+	print Exiting
+	terminate
+}
+
+csv "zerto_details" = ${zerto_details_export_file}
+csv add_headers "zerto_details" VmName CpuUsedInMhz ActiveGuestMemoryInMB RecoveryJournalUsedStorageInGB  RecoveryVolumesProvisionedStorageInGB RecoveryVolumesUsedStorageInGB
+csv fix_headers "zerto_details"
+
+foreach $JSON{zrt}.[] as this_zrt {
+	csv write_field zerto_details $JSON(this_zrt).[VmName]
+	csv write_field zerto_details $JSON(this_zrt).[CpuUsedInMhz]
+	csv write_field zerto_details $JSON(this_zrt).[ActiveGuestMemoryInMB]
+	csv write_field zerto_details $JSON(this_zrt).[RecoveryJournalUsedStorageInGB]
+	csv write_field zerto_details $JSON(this_zrt).[RecoveryVolumesProvisionedStorageInGB]
+	csv write_field zerto_details $JSON(this_zrt).[RecoveryVolumesUsedStorageInGB]
+
+}
+
+print JSON retrieved  
+
+clear http_headers

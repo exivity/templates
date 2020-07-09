@@ -26,6 +26,10 @@ public var tcpport = "443"
 public var username = "username"
 # Password for the username to call the vCenter REST API
 public var password = "password"
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
+
+set http_secure ${secure_ssl}
 
 var JSON_dir = "system/extracted/VC65/json" # directory should exist
 var CSV_dir = "system/extracted/VC65" # directory should exist
