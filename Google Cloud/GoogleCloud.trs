@@ -1,0 +1,57 @@
+# Set run time options
+option loglevel = INFO
+option overwrite = NO
+
+# Make sure to point this to the directory where the Extractor writes its files
+import "system\extracted\GoogleCloud\${dataDate}_GCP.csv" source google alias billing
+
+default dset google.billing
+# ==================== Get Project Tags ==================== #
+
+#create columns from project_label_key using project_label_value
+
+#delete columns project_label_key project_label_value
+
+#aggregate google.billing notime ALL THE COLUMNS match NameOfTag1 longest NameOfTag2 longest
+
+#delete column EXIVITY_AGGR_COUNT
+
+# Aggregating consumption (comment this part when applying tags)
+aggregate google.billing billing_account_id match service_id match service_description match sku_id match sku_description match cost match quantity match units match
+delete column EXIVITY_AGGR_COUNT
+
+# Normalise column headers
+default dset google.billing
+# Calculate rate
+calculate column rate as column cost / column quantity
+
+# Obtain the Resource
+create mergedcolumn instance separator " " from service_description sku_description location country
+# Obtain Service Category
+create mergedcolumn resource_category from service_description
+
+# Create services
+create mergedcolumn service_name separator " " from service_description sku_description
+create mergedcolumn service_desc separator " " from service_name project_id rate country
+create column interval value "individually"
+
+# Delete unnecesary columns
+delete columns service_id sku_id zone cost currency currency_conversion_rate credits credits_amount cost_type
+
+# Uncomment the below statement for troubleshooting
+#export google.billing as "GoogleCloud/${dataDate}GoogleCloud_out.csv"
+
+finish
+# option services = overwrite
+services {
+  effective_date = 20190101
+  service_type = automatic
+  description_col = service_desc # column name
+  category_col = resource_category # column with category value
+  instance_col = instance # the unique instance i.e. vm-id, username, etc
+  usages_col =  service_name # the column containing the name of the consumed service
+  rate_col = rate # the column containing the rate values
+  interval_col  = interval # the column containing the interval (i.e. individually)
+  unit_label_col = units # the column containing the unit label
+  consumption_col = quantity # the column containing the consumed quantity
+}

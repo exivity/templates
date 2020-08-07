@@ -1,0 +1,156 @@
+loglevel INFO
+#==================== Introduction ======================#
+#
+#  This is a template Extractor for Google Cloud Platform
+#  This extractor requires two dates in the form YYYYMMDD YYYMMDD
+#
+#==================== Introduction ======================#
+#====================== Validation ======================#
+# Check if we have two parameters (from and to date)
+if (${ARGC} != 2)
+{
+    print This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format
+    terminate with error
+} else {
+    var from_date = ${ARG_1}
+    var to_date = ${ARG_2}
+}
+# Validate the date formats
+gosub check_date(${from_date})
+gosub check_date(${to_date})
+# ========================================================
+#     This subroutine checks that its argument
+#     is an 8 digit decimal number
+# ========================================================
+subroutine check_date {
+    # Validate the format
+    match date "^([0-9]{8})$" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Error: the provided argument is not in yyyyMMdd format
+        terminate with error
+    }
+}
+
+#====================== Validation ======================#
+# The Google Storage bucket where billing exports are saved
+# Default endpoint for Google BigQuery
+public var hostname = "https://bigquery.googleapis.com/bigquery/v2"
+# Provide the RSA private key PEM format --> IMPORTANT! replace \n with ${NEWLINE}
+public var private = "-----BEGIN PRIVATE KEY-----${NEWLINE}MIIEvQIBADAPEM_KEY${NEWLINE}-----END PRIVATE KEY-----"
+# Mail address / service account associated with the private key
+public var email = "svc-billing@acme-com-1501144877673.iam.gserviceaccount.com"
+# GCP Project ID
+public var project = "acme-com-1501144877673"
+# GCP BigQuery Billing Dataset
+public var bigquery_dataset = "billing"
+# GCP BigQuery Billing Table
+public var bigquery_table = "gcp_billing_export_v1_test"
+# default settings for google auth / storage
+var url = "https://www.googleapis.com/oauth2/v4/token"
+var scope = "https://www.googleapis.com/auth/cloud-platform"
+# location to store usage files
+var CSV_dir = "system/extracted/GoogleCloud"
+#
+#=================  End Configuration ==================#
+#=================  Date Formatting  ==================#
+var data_date = ${from_date}
+# count of days in the selection
+var days_in_range = (@DATEDIFF(${to_date}, ${from_date}))
+var days_in_range = (${days_in_range}+1)
+#=================  End Date Formatting ==================#
+var now = ${UNIX_UTC}
+var expiry = (${now} + 3600)
+var header = "{\"alg\":\"RS256\",\"typ\":\"JWT\"}"
+var payload = "{\"iss\":\"${email}\",\"scope\":\"${scope}\",\"aud\":\"${url}\",\"iat\":\"${now}\",\"exp\":\"${expiry}\"}"
+generate_jwt key ${private} ${header} ${payload} as JWT
+# Make HTTP request according to https://developers.google.com/identity/protocols/OAuth2ServiceAccount
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_body data "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion=${JWT}"
+buffer token = HTTP POST "${url}"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    print The server response was:
+    json format {token}
+    print {token}
+    terminate
+}
+# save the access token
+var access_token = $JSON{token}.[access_token]
+# print Access token: ${access_token}
+#/ Get a CSV files from Google Billing Bucket
+print "Getting Google Cloud Billing Files ..."
+
+
+# Calculating range of days
+var days_in_range = (@DATEDIFF(${to_date}, ${from_date}))
+var data_date = ${from_date}
+
+loop daysinrange ${days_in_range} { # Starting loop
+
+#=================  Date Formatting  ==================#
+var data_year = (@SUBSTR(${data_date}, 0, 4))
+var data_month = (@SUBSTR(${data_date}, 5, 2))
+var data_day = (@SUBSTR(${data_date}, 7, 2))
+
+#====================== CSV Definition ======================#
+  var usage_export_file = "${CSV_dir}/${data_year}${data_month}${data_day}_GCP.csv"
+  csv "usage" = ${usage_export_file}
+  csv add_headers "usage" billing_account_id	service_id	service_description	sku_id	sku_description		labels_key	labels_value	system_key	system_value	location	country	zone	cost	currency	currency_conversion_rate	quantity	units	credits	credits_amount project_id project_name	invoice	cost_type	project_label_key	project_label_value
+  csv fix_headers "usage"
+#====================== End of CSV Definition ======================#
+
+var data_date = (@DATEADD(${data_date},1))
+var data_year = (@SUBSTR(${data_date}, 0, 4))
+var data_month = (@SUBSTR(${data_date}, 5, 2))
+var data_day = (@SUBSTR(${data_date}, 7, 2))
+
+### ALTERNATIVE QUERIES ###
+
+var query = "{\"useLegacySql\": false, \"query\": \"SELECT billing_account_id, service.id as service_id , service.description as service_description, sku.id as sku_id,sku.description as sku_description, labels.key as labels_key, labels.value as labels_value, system_labels.key as system_key, system_labels.value as system_value, location.location as location, location.country as country, location.zone as zone, cost, currency, currency_conversion_rate, usage.amount_in_pricing_units as quantity , usage.pricing_unit as units, credits.name as credits, credits.amount as credits_amount, project.id as project_id, project.name as project_name, invoice.month as invoice, cost_type, project_labels.key as project_label_key, project_labels.value as project_label_value FROM `${project}.${bigquery_dataset}.${bigquery_table}` LEFT JOIN UNNEST(project.labels) as project_labels LEFT JOIN UNNEST(labels) as labels LEFT JOIN UNNEST (system_labels) as system_labels LEFT JOIN UNNEST(credits) as credits WHERE CAST(DATE(_PARTITIONTIME) AS DATE) = DATE_SUB(DATE '${data_year}-${data_month}-${data_day}', INTERVAL 1 DAY);\"}"
+
+# Set up the HTTP request parameters
+clear http_headers
+set http_header "Authorization: Bearer ${access_token}"
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/json"
+set http_body data ${query}
+# obtain the usage csv for every day in the date range
+
+    # naming convention for GCP usage files
+    var export_file = "${CSV_dir}/json/${data_date}_google_usage.json"
+    set http_savefile "${export_file}"
+    # Get the files from google cloud
+    buffer bigquery = http POST "${hostname}/projects/${project}/queries"
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format {bigquery}
+        print {bigquery}
+        terminate
+    }
+
+
+var totalrows = $JSON{bigquery}.[totalRows]
+
+if (${totalrows} > 0) { # Populating the csv if there is data available
+    foreach $JSON{bigquery}.[rows] as this_query {
+        foreach $JSON(this_query) as this_row {
+            foreach $JSON(this_row) as this_row2 {
+                foreach $JSON(this_row2) as this_row3 {
+                    var write = $JSON(this_row3)
+                        if ("${write}" != "") {
+                            #print ${write}
+                            csv write_field "usage" ${write}
+                        }                    
+                }
+            }
+        }
+    }
+}
+
+csv close "usage"
+var data_aux = (@DATEADD(${data_date},-1))
+print Data retrieved for ${data_aux}
+
+} # Ending loop
+print Completed data retrieval for GCP billing
