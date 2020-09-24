@@ -1,61 +1,73 @@
-option loglevel = DEBUGX
+option loglevel = INFO
 option embed = YES
-
+ 
 #
-# Import usage from Azure Stack 
+# Import usage from Azure Stack
 # This is extracted using Azure Stack extractor (see github)
 #
 import "system\extracted\AzureStack\${dataDate}_stack_usage.csv" source azure alias stack_usage
 import "system\extracted\AzureStack\${dataDate}_stack_subscriptions.csv" source azure alias subscriptions
-
+ 
 # import example rates
 import "import/lookup/AzureStack_rates.csv" source azure alias stack_rates # CHANGE THIS DIRECTORY/FILE TO YOUR OWN RATES
-
+ 
 # import example rates
 default dset azure.stack_rates
 lowercase values in column service_key
 create mergedcolumn correlCol from service_name
-
+ 
 # obtain subscription names and normalise data
 default dset azure.stack_usage
-
+ 
 correlate azure.subscriptions.displayName using subscriptionId
-
+ 
 #correlate azure.subscriptions.displayName using subscriptionId
 rename column displayName to "Subscription Name"
 rename column subscriptionId to "Subscription ID"
 rename column meterId to "Meter ID"
 # don't need the record ID, name and type
 delete columns id name type
-
+ 
 # get the service and image type tags
 create mergedcolumn ImageType from additionalInfo /.*ImageType[:\"]*([^\",}]*).*/
 create mergedcolumn ServiceType from additionalInfo /.*ServiceType[:\"]*([^\",}]*).*/
 delete column additionalInfo
-
-#export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}BUG.csv" 
+ 
+#export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}BUG.csv"
 # set the resource group, provider and resource id
 create mergedcolumn "Resource Group" from resourceUri /resourceGroups\/(.*)\/providers/
 #create mergedcolumn Resource from resourceUri /\/(\w*)$/
-create mergedcolumn "Resource ID" from resourceUri /\/(\w*)$/
-
+create mergedcolumn "Resource ID" from resourceUri /([^\/]+$)/
+ 
 # Uppercase meters and create unique services
 uppercase values in column "Meter ID"
 create mergedcolumn service_key from "Meter ID"
 lowercase values in column service_key
-
+ 
 default dset azure.stack_usage
 correlate service_name unit rate Category using "service_key" assuming azure.stack_rates
-#delete column service_key
-#create mergedcolumn service_key from "Meter ID"
-
+# ======== VM TYPES ==========
+# Create unique VM type column
+# Do not use this in case you rather 
+# charge for VM core hours
+where ([service_key] == "6dab500f-a4fd-49c4-956d-229bb9c8c793") {
+  set service_key = (@CONCAT([service_key], "_", [ServiceType]))
+}
+# =========== NOTE REGARDING VM's =================
+# Deleting Windows VM Core hours and Base hours
+# These create redundancy with VM Type line items
+# Remove the below in case you want to charge for cores instead of VM type
+where ( ([service_key]=="9cd92d4c-bafd-4492-b278-bedc2de8232a") || ([service_key]=="fab6eb84-500b-4a09-a8ca-7358f8bbaea5") ) {
+  delete rows
+}
+ 
 # auto generate VM Size Type service names
 create mergedcolumn vms_size_service separator " " from "ServiceType"
 option overwrite = YES
   where ([vms_size_service] != "") {
   set service_name as vms_size_service
- }
-
+}
+ 
 # Set dummy values for columns that don't have a value set
 option overwrite = NO
 set rate to "0"
@@ -64,21 +76,20 @@ set unit to "Unit/Hours"
 set "Subscription Name" to "Default Subscription"
 create column interval value "individually"
 set Category to "Azure Stack Generic Resources"
-
+ 
 # 20% Uplift
 option overwrite = Yes
 set cogs as rate
 calculate column rate as column rate * value 1.20
-
+ 
 # cleanup
-delete columns resourceUri tags usageStartTime  correlCol  usageEndTime
-
+delete columns resourceUri tags usageStartTime usageEndTime
+ 
 # export data for troubleshooting
-export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}.csv" 
-
+export azure.stack_usage as "Azure_Stack/stack_usage${dataDate}.csv"
+ 
 finish
-
-#option services = overwrite
+ 
 services {
   effective_date = 20180101
     service_type = automatic
@@ -89,6 +100,6 @@ services {
     set_rate_using = rate
     set_cogs_using = cogs
     interval_col  = interval
-    unit_label_col = unit 
+    unit_label_col = unit
     consumption_col = quantity
 }
