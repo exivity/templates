@@ -1,0 +1,88 @@
+option loglevel = INFO
+#####################################################################
+#
+# Example Transformer for AWS CUR for S3 based Extractions
+#
+#####################################################################aa
+# Import Current Month of CUR Files
+#
+import "system/extracted/aws/${dataYear}${dataMonth}/.*[0-9]*\.csv" source aws alias cur options {
+  pattern on
+  filter = ([lineItem\/UsageStartDate] =~ /${dataYear}-${dataMonth}-${dataDay}.*/) 
+}
+
+# Normalise the columns names
+rename column ${/.*bill.PayerAccountId/} to PayerAccountId
+rename column ${/.*lineItem.UsageAccountId/} to LinkedAccountId
+rename column ${/.*lineItem.LineItemType/} to LineItemType
+rename column ${/.*lineItem.UsageStartDate/} to UsageStartDate
+rename column ${/.*lineItem.UsageEndDate/} to UsageEndDate
+rename column ${/.*lineItem.UsageType/} to UsageType
+rename column ${/.*lineItem.Operation/} to Operation
+rename column ${/.*lineItem.AvailabilityZone/} to AvailabilityZone
+rename column ${/.*lineItem.ResourceId/} to ResourceId
+rename column ${/.*lineItem.UsageAmount/} to UsageQuantity
+rename column ${/.*lineItem.NormalizedUsageAmount/} to NormalizedUsageAmount
+rename column ${/.*lineItem.CurrencyCode/} to CurrencyCode
+rename column ${/.*lineItem.BlendedRate/} to BlendedRate
+rename column ${/.*lineItem.BlendedCost/} to BlendedCost
+rename column ${/.*lineItem.UnblendedRate/} to UnblendedRate
+rename column ${/.*lineItem.UnblendedCost/} to UnblendedCost
+rename column ${/.*lineItem.LineItemDescription/} to LineItemDescription
+rename column ${/.*product.ProductName/} to ProductName
+rename column ${/.*product.operatingSystem/} to box_type
+rename column ${/.*product.usagetype/} to usagetype2
+rename column ${/.*pricing.term/} to ReservedInstance
+rename column ${/.*pricing.unit/} to unit
+
+# NOTE:
+# =====
+# Make sure to provide a manual lookup file using the Lookup Manager.
+# The file should look like the following example:
+#  ----------------------------
+# | LinkedAccountId,Customer   |
+# | 123456789,My Company Name  |
+# | 0987654321,Some Other Corp |
+#  ----------------------------
+#
+#import "import/lookup/aws_customer_lookup.csv" source aws alias customers
+#correlate Customer using LinkedAccountId assuming aws.customers
+
+
+# Identify between Reserved and On demand instances (blanks = Reserved)
+where ([ReservedInstance] == "") {
+  set ReservedInstance to "Reserved"
+ }
+
+# set standard values
+option overwrite = no
+set ResourceId to "Generic Consumption Record"
+# create column interval value individually
+
+# set generic unit value to blank cells
+where ([unit] == "") {
+  set unit to "Units"
+}
+create mergedcolumn service_key separator " | " from ReservedInstance UsageType box_type Operation AvailabilityZone ProductName
+create mergedcolumn service_name separator " " from ProductName ReservedInstance UsageType box_type Operation AvailabilityZone
+# Remove records without costs 
+# This can be removed, when you're interested in consumption rather then costs
+where ( [BlendedRate] == 0 ) {
+  delete rows
+}
+
+finish
+
+services {
+  effective_date = 20190101
+  service_type = automatic
+  description_col = service_key # column name
+  category_col = ProductName # column with category value
+  instance_col = ResourceId # the unique instance i.e. vm-id, username, etc
+  usages_col = service_name # the column containing the name of the consumed service usagetype2
+  rate_col = BlendedRate # the column containing the rate values
+  cogs_col = UnblendedRate # the column containing the CoG rate values
+  interval  = individually
+  unit_label_col = unit # the column containing the unit label
+  consumption_col = UsageQuantity # the column containing the consumed quantity
+}
