@@ -71,6 +71,16 @@ where ( [BlendedRate] == 0 ) {
   delete rows
 }
 
+# default rate
+create column rate
+set rate = [UnblendedRate]*1
+# default cogs
+create column cogs
+set cogs = [UnblendedRate]*1
+
+# aggregate dataset
+aggregate notime LinkedAccountId match service_key match rate match ResourceId match UsageQuantity sum
+
 finish
 
 services {
@@ -80,8 +90,8 @@ services {
   category_col = ProductName # column with category value
   instance_col = ResourceId # the unique instance i.e. vm-id, username, etc
   usages_col = service_name # the column containing the name of the consumed service usagetype2
-  rate_col = BlendedRate # the column containing the rate values
-  cogs_col = UnblendedRate # the column containing the CoG rate values
+  rate_col = rate # the column containing the rate values
+  cogs_col = cogs # the column containing the CoG rate values
   interval  = individually
   unit_label_col = unit # the column containing the unit label
   consumption_col = UsageQuantity # the column containing the consumed quantity
