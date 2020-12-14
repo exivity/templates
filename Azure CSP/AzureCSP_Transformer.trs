@@ -1,0 +1,587 @@
+#################################################################
+# 
+#  This Transformer will run daily for the AzureCSP environment.
+#  It is dependent on the AzureCSP_Extractor.
+#  Once a custom ratecard is made the Transformer will correct the prices to match the invoices.
+#
+#  Please consult https://docs.exivity.com/ for more info.
+#
+# ==========================================================
+
+# Transformer Config #
+var importdir = "system/extracted/AzureCSP"
+
+# Monthly charge startday
+var csp_charge_startday = 01
+
+# Default Name items
+var default_customer = "My Company"
+# Transformer Config #
+
+
+# Setup Log and service settings
+option loglevel = INFO
+option services = overwrite
+
+# Define storage location of AzurePlan
+var azureplandir = "${importdir}/AzurePlan"
+# Define storage location of LicenseInvoice
+var licensedate = @DTADD(${dataDate}, -1 , MONTH)
+var licensemonth = @SUBSTR(${licensedate}, 5, 2)
+var licenseyear = @SUBSTR(${licensedate}, 1, 4)
+var licensedir = "${importdir}/${licenseyear}/${licensemonth}/invoice"
+
+# Define import dir based on Bukkit information
+if (${dataDay} < ${csp_charge_startday}) {
+    var prevmonth = @DTADD(${dataDate}, -1 , MONTH)
+    var storemonth = @SUBSTR(${prevmonth}, 5, 2)
+    var storeyear = @SUBSTR(${prevmonth}, 1, 4)
+    var importdir = "${importdir}/${storeyear}/${storemonth}"
+    var bukkityear = "${storeyear}"
+    var bukkitmonth = "${storemonth}"
+} else {
+    var importdir = "${importdir}/${dataYear}/${dataMonth}"
+    var bukkityear = "${dataYear}"
+    var bukkitmonth = "${dataMonth}"
+}
+
+# Define this day usageStartTime
+var this_day_usage_start_time = "${dataYear}-${dataMonth}-${dataDay}T00:00:00+00:00"
+
+#################### Import items ####################
+# Import Daily rates (a requirement to run further transformations)
+if (@FILE_EXISTS("exported/AzureCSP/Invoice/${bukkityear}${bukkitmonth}_Invoice_Ratecard.csv")) {
+    var ratecardimport = no
+    var invoiceratecardimport = yes
+    import "exported/AzureCSP/Invoice/${bukkityear}${bukkitmonth}_Invoice_Ratecard.csv" source Rates alias ratecard
+} else {
+    if (@FILE_EXISTS("${importdir}/Rates/Ratecard.csv")) {
+        var ratecardimport = yes
+        var invoiceratecardimport = no
+        import "${importdir}/Rates/Ratecard.csv" source Rates alias ratecard
+    } else {
+        terminate with error
+    }
+}
+
+# AzurePlan Import
+option embed = yes
+if (@FILE_EXISTS("${azureplandir}/csp_usage_azureplan_${dataYear}${dataMonth}.csv")) {
+    # Set the Azure Plan collection counter to yes for transformation
+    var azureplanimport = yes
+    
+    # Import AzurePlan items that are available till now
+    import "${azureplandir}/csp_usage_azureplan_${dataYear}${dataMonth}.csv" source AzurePlan alias Usage options {
+        pattern enabled
+        filter (["usageDate"] =~ /${dataYear}-${dataMonth}-${dataDay}.*/ )
+    }
+} else {
+    var azureplanimport = no
+}
+option embed = no
+
+# Azure Usage Import
+option embed = yes
+if (@FILE_EXISTS("${importdir}/AzureUsage/${dataDate}_csp_customers.csv")) {
+    if (@FILE_EXISTS("${importdir}/AzureUsage/${dataDate}_csp_subscriptions.csv")) {
+        if (@FILE_EXISTS("${importdir}/AzureUsage/${dataDate}_csp_usage.csv")) {
+            # Set the Usage collection counter to yes for transformation
+            var azureusageimport = yes
+
+            # Import Azure Customers
+            import "${importdir}/AzureUsage/${dataDate}_csp_customers.csv" source Azure alias Customers options {
+                pattern enabled
+            }
+            # Import Azure Subscriptions
+            import "${importdir}/AzureUsage/${dataDate}_csp_subscriptions.csv" source Azure alias Subscriptions options {
+                pattern enabled
+            }
+            # Import Azure Usage
+            import "${importdir}/AzureUsage/${dataDate}_csp_usage.csv" source Azure alias Usage options {
+                pattern enabled
+            }
+        } else {
+            var azureusageimport = no
+        }
+    } else {
+        var azureusageimport = no
+    }
+} else {
+    var azureusageimport = no
+}
+option embed = no
+
+# Azure IUR Import
+option embed = yes
+if (@FILE_EXISTS("${importdir}/IUR_Subscriptions/${dataDate}_csp_subscriptions_IUR.csv")) {
+    if (@FILE_EXISTS("${importdir}/IUR_Usage/${dataDate}_csp_Usage_IUR.csv")) {
+        # Set the IUR collection counter to yes for transformation
+        var iurimport = yes
+
+        # Import IUR Subscriptions
+        import "${importdir}/IUR_Subscriptions/${dataDate}_csp_subscriptions_IUR.csv" source IUR alias Subscriptions options {
+            pattern enabled
+        }
+        # Import IUR Usage
+        import "${importdir}/IUR_Usage/${dataDate}_csp_usage_IUR.csv" source IUR alias Usage options {
+            pattern enabled
+        }
+    } else {
+        var iurimport = no
+    }
+} else
+    var iurimport = no
+}
+option embed = no
+
+# License Invoice Import
+option embed = yes
+if (@FILE_EXISTS("${licensedir}/${licenseyear}${licensemonth}_csp_bill.csv")) {
+    var licenseimport = yes
+    import "${licensedir}/${licenseyear}${licensemonth}_csp_bill.csv" source Azure alias License options {
+        filter (["billingProvider"] == "office" )
+    }
+} else {
+    var licenseimport = no
+}
+option embed = no
+#################### Import items ####################
+
+################## Normalize items ###################
+
+# Normalize Ratecard
+if ("${ratecardimport}" == "yes") {
+    default dset Rates.ratecard
+    uppercase values in columns meter_id
+    rename column meter_id to resource_id
+}
+
+# Normalize Invoice Ratecard
+if ("${invoiceratecardimport}" == "yes") {
+    default dset Rates.ratecard
+    create mergedcolumn ratekey from subscriptionId resourceGuid
+}
+
+# Normalize Azure Customers
+if ("${azureusageimport}" == "yes") {
+    default dset Azure.Customers
+    uppercase values in columns ID tenantId
+    capitalise values in column Relationship
+    rename column ID to customer_id
+    rename column Name to customer_name
+}
+
+# Normalize Azure Subscriptions
+if ("${azureusageimport}" == "yes") {
+    default dset Azure.Subscriptions
+    uppercase values in columns customer_id tenant_id subscription_id offerId
+    capitalise values in columns status autoRenewEnabled billingType contractType
+    rename column friendlyName to subscription_name
+}
+
+# Normalize Azure Usage
+if ("${azureusageimport}" == "yes") {
+    default dset Azure.Usage
+    uppercase values in columns customer_id subscription_id resource_id
+    capitalise values in column location
+    create mergedcolumn ratekey from subscription_id resource_id
+}
+
+# Normalize IUR Subscriptions
+if ("${iurimport}" == "yes") {
+    default dset IUR.Subscriptions
+    uppercase values in columns customer_id subscription_id offerId
+    capitalise values in columns status autoRenewEnabled billingType contractType
+    rename column friendlyName to subscription_name
+}
+
+# Normalize IUR Usage
+if ("${iurimport}" == "yes") {
+    default dset IUR.Usage
+    uppercase values in columns customer_id subscription_id resource_id
+    capitalise values in column location
+    create mergedcolumn ratekey from subscription_id resource_id
+}
+
+# Normalize AzurePlan
+if ("${azureplanimport}" == "yes") {
+    default dset AzurePlan.Usage
+    create column plan value 1
+    rename column meterId to resource_id
+    rename column customerId to customer_id
+    rename column customerName to customer_name
+    rename column meterName to resource_name
+    rename column meterCategory to resource_category
+    rename column meterSubCategory to resource_subcategory
+    rename column unitOfMeasure to unit
+	rename column resourceLocation to region
+	rename column subscriptionId to subscription_id
+    create column interval value individually
+    rename column region to location
+    lowercase values in column location
+    capitalise values in column location
+    uppercase values in column partnerId customer_id subscription_id resource_id entitlementId
+    create mergedcolumn ratekey from subscription_id resource_id
+}
+
+# Normalize licenses
+if ("${licenseimport}" == "yes") {
+    default dset Azure.License
+    rename column subscriptionId to resource_id
+    rename column partnerId to partner_id
+    rename column customerId to customer_id
+    rename column offerId to service_key
+    rename column syndicationPartnerSubscriptionNumber to subscription_id
+    rename column unitPrice to rate
+    rename column customerName to customer_name
+    rename column offerName to resource_name
+    rename column subscriptionDescription to instance
+    rename column billingProvider to Department
+    uppercase values in column partner_id customer_id subscription_id service_key
+    capitalise values in column Department
+    delete columns detailLineItemId sku includedQuantity overageQuantity listPrice pretaxCharges taxAmount postTaxTotal pretaxEffectiveRate postTaxEffectiveRate partnerName partnerBillableAccountId customerCompanyName invoiceNumber serviceName serviceType resourceGuid resourceName region consumedQuantity chargeType totalOtherDiscount subtotal tax totalForCustomer invoiceLineItemType partner_id mpnId tier2MpnId subscriptionId orderId resource_name domainName subscriptionStartDate subscriptionEndDate billingCycleType chargeEndDate amount currency durableOfferId
+}
+
+################## Normalize items ###################
+
+################ License Usage items #################
+if ("${licenseimport}" == "yes") {
+    default dset Azure.License
+    var licenseChargeDate == "${dataYear}-${dataMonth}-${dataDay}T00:00:00Z"
+    where ([chargeStartDate] != ${licenseChargeDate}) {
+        delete row
+    } 
+
+    delete column chargeStartDate
+    create column region value "Global"
+    create column location value "Universal"
+    create column unit value "License(s)"
+    create column resourceGroup value "Office Licenses"
+    create column interval value "Individually"
+    create column cogs value "0"
+}
+
+################ License Usage items #################
+
+################# Daily Usage items ##################
+
+if ("${azureusageimport}" == "yes") {
+    if (@DSET_ROWCOUNT(Azure.Usage) > 0) {
+        if (("${ratecardimport}" == "yes") || ("${invoiceratecardimport}" == "yes")) {
+            var run_daily_usage = yes
+            default dset Azure.Usage
+            
+            # Define the customer name in the Usage DSET
+            correlate Azure.Customers.customer_name using customer_id
+            
+            # Define the subscription in the Usage DSET
+            correlate Azure.Subscriptions.offerId Azure.Subscriptions.offerName Azure.Subscriptions.subscription_name using subscription_id
+            
+            # Add ratecard price to the Usage DSET
+            if ("${ratecardimport}" == "yes") {
+	            correlate Rates.ratecard.rate using resource_id
+            }
+
+            # Add invoice based ratecard price to the Usage DSET
+            if ("${invoiceratecardimport}" == "yes") {
+	            correlate Rates.ratecard.rate using ratekey
+            }
+            
+            # Create ServiceName
+            create mergedcolumn service_name separator " " from "resource_name"
+            create mergedcolumn service_key from "resource_id"
+            
+            # Extract ResourceGroup and ResourceName
+            create mergedcolumn instance from resourceUri /.*\/(.*)$/
+            lowercase values in column instance
+            split resourceUri using / retaining 5
+            rename column resourceUri_split1 to resourceGroup
+            lowercase values in column resourceGroup
+
+            # Set dummy values for columns that don't have a value set
+            option overwrite = NO
+            if (!@COLUMN_EXISTS("rate")) {
+                create column rate
+            }
+            set rate to "0"
+            create column cogs
+            set cogs as rate
+            set unit to "Unit/Hours"
+            create column interval value "individually"
+            set resource_category to "Azure Generic Resources"
+            set subscription_name to "Default Subscription"
+            set resourceGroup to "ResourceGroup not available"
+            set instance to "Generic Instance Usage"
+            set region to "EXIVITY_NOT_FOUND"
+            set service_name to "EXIVITY_NOT_FOUND"
+            set location to "EXIVITY_NOT_FOUND"
+            set resource_subcategory to "EXIVITY_NOT_FOUND"
+            set resource_name to "EXIVITY_NOT_FOUND"
+            option overwrite = YES    
+
+            # Fill certain EXIVITY_NOT_FOUND items
+            where ([region] == "EXIVITY_NOT_FOUND") {
+                set region to "Universal"
+            } 
+            where ([service_name] == "EXIVITY_NOT_FOUND") {
+                set service_name as service_key
+            } 
+            where ([location] == "EXIVITY_NOT_FOUND") {
+                set location to "Universal"
+            }
+            where ([resource_subcategory] == "EXIVITY_NOT_FOUND") {
+                set resource_subcategory as resource_category
+            }
+            where ([resource_name] == "EXIVITY_NOT_FOUND") {
+                set resource_name as resource_id
+            }
+
+            # Calculate rate using global uplift
+            create column Department value Azure
+        } else {
+            var run_daily_usage = no
+        }
+    }
+}
+
+################# Daily Usage items ##################
+
+################## Daily IUR items ###################
+
+if ("${iurimport}" == "yes") {
+    if (@DSET_ROWCOUNT(IUR.Usage) > 0) {
+        if (("${ratecardimport}" == "yes") || ("${invoiceratecardimport}" == "yes")) {
+            var run_IUR_usage = yes
+            default dset IUR.Usage
+            
+            # Define the customer name in the Usage DSET
+            create column customer_name value ${default_customer}
+            
+            # Define the subscription in the Usage DSET
+            correlate IUR.Subscriptions.offerId IUR.Subscriptions.offerName IUR.Subscriptions.subscription_name using subscription_id
+            
+            # Add ratecard price to the Usage DSET
+            if ("${invoiceratecardimport}" == "yes") {
+                correlate Rates.ratecard.rate using ratekey
+            }
+            
+            # Create ServiceName
+            create mergedcolumn service_name separator " " from "resource_name"
+            create mergedcolumn service_key from "resource_id"
+            
+            # Extract ResourceGroup and ResourceName
+            create mergedcolumn instance from resourceUri /.*\/(.*)$/
+            lowercase values in column instance
+            split resourceUri using / retaining 5
+            rename column resourceUri_split1 to resourceGroup
+            lowercase values in column resourceGroup
+
+            # Set dummy values for columns that don't have a value set
+            option overwrite = NO
+            if (!@COLUMN_EXISTS("rate")) {
+                create column rate
+            }
+            set rate to "0"
+            create column cogs
+            set cogs as rate
+            set unit to "Unit/Hours"
+            create column interval value "individually"
+            set resource_category to "Azure Generic Resources"
+            set subscription_name to "Default Subscription"
+            set resourceGroup to "ResourceGroup not available"
+            set instance to "Generic Instance Usage"
+            set region to "EXIVITY_NOT_FOUND"
+            set service_name to "EXIVITY_NOT_FOUND"
+            set location to "EXIVITY_NOT_FOUND"
+            set resource_subcategory to "EXIVITY_NOT_FOUND"
+            set resource_name to "EXIVITY_NOT_FOUND"
+            option overwrite = YES    
+
+            # Fill certain EXIVITY_NOT_FOUND items
+            where ([region] == "EXIVITY_NOT_FOUND") {
+                set region to "Universal"
+            } 
+            where ([service_name] == "EXIVITY_NOT_FOUND") {
+                set service_name as service_key
+            } 
+            where ([location] == "EXIVITY_NOT_FOUND") {
+                set location to "Universal"
+            }
+            where ([resource_subcategory] == "EXIVITY_NOT_FOUND") {
+                set resource_subcategory as resource_category
+            }
+            where ([resource_name] == "EXIVITY_NOT_FOUND") {
+                set resource_name as resource_id
+            }
+
+            # Calculate rate using global uplift
+            create column Department value Azure
+        } else {
+            var run_daily_usage = no
+        }
+    }
+}
+
+################## Daily IUR items ###################
+
+
+############### AzurePlan Usage items ################
+if ("${azureplanimport}" == "yes") {
+    var run_azureplan_usage = yes
+    default dset AzurePlan.Usage
+
+    option overwrite = yes
+    calculate column rate2 as column effectiveUnitPrice * column pcToBCExchangeRate
+    set meterRegion to "Universal"
+    option overwrite = no
+    set pricingCurrency as billingCurrency
+
+    create column cogs
+    set cogs = ((1-[rateOfPartnerEarnedCredit])*[rate2])
+    
+    rename column rate2 to rate
+    rename column meterRegion to region
+
+    create column subscription_name
+    create column service_name
+    create column service_key
+
+    set service_name as resource_name
+    set service_key as resource_id
+    # Extract ResourceGroup and ResourceName
+    create mergedcolumn instance from resourceUri /.*\/(.*)$/
+    lowercase values in column instance
+    
+    if ("${azureusageimport}" == "yes") {
+        correlate Azure.Subscriptions.subscription_name using subscription_id
+    }
+
+    # Set dummy values for columns that don't have a value set
+    option overwrite = NO
+    set rate to "0"
+    set cogs as rate
+    set unit to "Unit/Hours"
+    set resource_category to "Azure Generic Resources"
+    set subscription_name to "Default Subscription"
+    set resourceGroup to "ResourceGroup not available"
+    set instance to "Generic Instance Usage"
+    set region to "EXIVITY_NOT_FOUND"
+    set service_name to "EXIVITY_NOT_FOUND"
+    set location to "EXIVITY_NOT_FOUND"
+    set resource_subcategory to "EXIVITY_NOT_FOUND"
+    set resource_name to "EXIVITY_NOT_FOUND"
+    option overwrite = YES    
+
+    # Fill certain EXIVITY_NOT_FOUND items
+    where ([region] == "EXIVITY_NOT_FOUND") {
+        set region to "Universal"
+    } 
+    where ([service_name] == "EXIVITY_NOT_FOUND") {
+        set service_name as service_key
+    } 
+    where ([location] == "EXIVITY_NOT_FOUND") {
+        set location to "Universal"
+    }
+    where ([resource_subcategory] == "EXIVITY_NOT_FOUND") {
+        set resource_subcategory as resource_category
+    }
+    where ([resource_name] == "EXIVITY_NOT_FOUND") {
+        set resource_name as resource_id
+    }
+   
+    create column Department value AzurePlan
+    delete columns productId skuId availabilityId skuName usageDate resourceUri tags unitType billingPreTaxTotal pricingPreTaxTotal plan unitPrice pricingCurrency
+}
+
+############### AzurePlan Usage items ################
+
+#################### Append items ####################
+if (!@DSET_EMPTY("Azure.Usage")) {
+    rename dset Azure.Usage to AzureCSP.Result
+    if (!@DSET_EMPTY("AzurePlan.Usage")) {
+        append AzurePlan.Usage to AzureCSP.Result
+    }
+    if (@DSET_EXISTS("Azure.License")) {
+        if (!@DSET_EMPTY("Azure.License")) {
+            append Azure.License to AzureCSP.Result
+        }
+    }
+    if (@DSET_EXISTS("IUR.Usage")) {
+        if (!@DSET_EMPTY("IUR.Usage")) {
+            append IUR.Usage to AzureCSP.Result
+        }
+    }
+} else {
+    if (!@DSET_EMPTY("AzurePlan.Usage")) {
+        rename dset AzurePlan.Usage to AzureCSP.Result
+        if (@DSET_EXISTS("Azure.License")) {
+            if (!@DSET_EMPTY("Azure.License")) {
+                append Azure.License to AzureCSP.Result
+            }
+        }
+        if (@DSET_EXISTS("IUR.Usage")) {
+            if (!@DSET_EMPTY("IUR.Usage")) {
+                append IUR.Usage to AzureCSP.Result
+            }   
+        }
+    } else {
+        rename Azure.License to AzureCSP.Result
+    }
+}
+
+default dset AzureCSP.Result
+
+#################### Append items ####################
+
+##################### Clean items ####################
+
+create column azure value Azure
+create column service_category
+
+
+where ([service_name] =~ /Azure .*/) {
+    set service_name = @SUBSTR([service_name],6)
+}
+where ([service_name] !~ /.*Azure -.*/) {
+    create mergedcolumn service_name1 separator " - " from resource_name resource_subcategory
+    create mergedcolumn service_category1 separator " - " from azure resource_category
+    set service_name as service_name1
+    set service_category as service_category1
+}
+
+where ([customer_name] == "") {
+    set customer_name as customer_id
+} 
+
+where ([Department] == AzurePlan) {
+    create mergedcolumn service_name2 separator " - " from resource_name resource_subcategory
+    create mergedcolumn service_category2 separator " - " from Department resource_category
+    set service_name as service_name2
+    set service_category as service_category2
+}
+
+where ([Department] == "Office") {
+    create mergedcolumn service_name3 separator " - " from billingProvider instance
+    create mergedcolumn service_category3 separator " - " from billingProvider subscriptionName
+    set service_name as service_name3
+    set service_category as service_category3
+}
+
+delete columns partnerId partnerName usageStartTime usageEndTime resourceUri partNumber orderNumber objectType Parent ExtraCosts TenantSpecificCosts offerId offerName subscription_name azure resource_name resource_category resource_subcategory chargeType productName meterType consumedService billingCurrency pcToBCExchangeRate pcToBCExchangeRateDate rateOfPartnerEarnedCredit billingProvider resellerMpnId chargeStartDate chargeEndDate publisherId invoiceNumber customerDomainName service_name1 service_name2 service_name3 service_category1 service_category2 service_category3 Department publisherName subscriptionDescription customerCountry mpnId entitlementId entitlementDescription effectiveUnitPrice ratekey subscriptionName
+##################### Clean items ####################
+
+finish
+
+services {
+ 	effective_date = 20180801
+	service_type = automatic
+	description_col = service_name
+	category_col = service_category
+	instance_col = instance
+	usages_col = service_key
+	rate_col = rate
+	cogs_col = cogs
+	interval_col  = interval
+	unit_label_col = unit 
+	consumption_col = quantity
+}

@@ -1,0 +1,148 @@
+#################################################################
+# 
+#  This Transformer will create a custom ratecard based on a collected invoice
+#
+#  Please consult https://docs.exivity.com/ for more info.
+#
+# ==========================================================
+
+# Transformer Config #
+var importdir = "system/extracted/AzureCSP"
+
+# Monthly charge startday
+var csp_charge_startday = 01
+
+# Default Name items
+var default_customer = "My Company"
+var default_partner_name = "My PartnerName"
+var default_partner_Billable_Account_Id = "My bill account ID"
+# Transformer Config #
+
+
+# Setup Log and service settings
+option loglevel = INFO
+
+
+# Define storage location of AzurePlan
+var azureplandir = "${importdir}/AzurePlan"
+
+# Define import dir based on Bukkit information
+if (${dataDay} < ${csp_charge_startday}) {
+    var prevmonth = @DTADD(${dataDate}, -1 , MONTH)
+    var storemonth = @SUBSTR(${prevmonth}, 5, 2)
+    var storeyear = @SUBSTR(${prevmonth}, 1, 4)
+    var importdir = "${importdir}/${storeyear}/${storemonth}"
+    var bukkityear = "${storeyear}"
+    var bukkitmonth = "${storemonth}"
+} else {
+    var importdir = "${importdir}/${dataYear}/${dataMonth}"
+    var bukkityear = "${dataYear}"
+    var bukkitmonth = "${dataMonth}"
+}
+
+# Define this day usageStartTime
+var this_day_usage_start_time = "${dataYear}-${dataMonth}-${dataDay}T00:00:00+00:00"
+
+
+
+#################### Import items ####################
+# Bukkit Invoice Import (Mandatory for the Transformer to work, will exit without error if invoice does not exist)
+if (@FILE_EXISTS("${importdir}/Invoice/${bukkityear}${bukkitmonth}_csp_bill.csv")) {
+    var invoiceitemsimport = yes
+    import "${importdir}/Invoice/${bukkityear}${bukkitmonth}_csp_bill.csv" source invoice alias billingitems
+} else {
+    var invoiceitemsimport = no
+    terminate
+}
+
+# AzurePlan import for AzurePlan SubscriptionNames (Will use the default names if items not available or partner does not have AzurePlan)
+if (@FILE_EXISTS("${azureplandir}/csp_usage_azureplan_${bukkityear}${bukkitmonth}.csv")) {
+    import "${azureplandir}/csp_usage_azureplan_${bukkityear}${bukkitmonth}.csv" source azure alias plan options {
+        pattern enabled
+    }
+    var planimport = yes
+} else {
+    var planimport = no
+}
+#################### Import items ####################
+
+
+################## Normalize items ###################
+
+# Normalize invoice import
+if (${invoiceitemsimport} == yes) {
+    # Format GUID's
+    uppercase values in columns partnerId customerId subscriptionId syndicationPartnerSubscriptionNumber offerId durableOfferId resourceGuid
+
+    # Create rate column
+    create column rate
+
+    # Fill empty items with substitute items
+    where ([region] == "") {
+        set region to global
+    } 
+    where ([region] == "EXIVITY_NOT_FOUND") {
+        set region to global
+    } 
+    where ([partnerName] == "EXIVITY_NOT_FOUND") {
+        set partnerName to ${default_partner_name}
+    }
+    where ([partnerBillableAccountId] == "EXIVITY_NOT_FOUND") {
+        set partnerBillableAccountId to ${default_partner_Billable_Account_Id}
+    }
+    where ([subscriptionId] == "") {
+        set subscriptionId as orderId
+        set subscriptionName to "Default Subscription"
+    }  
+
+    # Fill empty items with data from AzurePlan if possible
+    option overwrite = no
+    if (${planimport} == yes) {
+        correlate azure.plan.subscriptionDescription using subscriptionId
+        correlate azure.plan.subscriptionDescription using subscriptionId
+    } else {
+        set subscriptionName to "Cannot find subscriptionName from AzurePlan files"
+        set subscriptionDescription to "Cannot find subscriptionDescription from AzurePlan files"
+    }
+    option overwrite = yes
+
+    # Fill empty items with substitute items
+    where ([subscriptionDescription] == "") {
+        set subscriptionDescription to "Azure CSP"
+    }
+    where ([subscriptionDescription] == "EXIVITY_NOT_FOUND") {
+        set subscriptionDescription to "Azure CSP"
+    }
+    where ([subscriptionName] == "") {
+        set subscriptionName to "Azure"
+    } 
+    where ([subscriptionName] == "EXIVITY_NOT_FOUND") {
+        set subscriptionName to "Azure"
+    }
+
+    # Delete office items as they are pulled directly from invoice
+    where ([billingProvider] == "office") {
+        delete row
+    }
+    
+    # Delete one_time items as they are pulled directly from invoice
+    where ([billingProvider] == "one_time") {
+        delete row
+    }
+
+    # Fill needed items
+    where ([billingProvider] == "azure") {
+        set customerName as customerCompanyName
+        set quantity as  consumedQuantity
+        set rate as pretaxEffectiveRate
+    }
+
+} else {
+    terminate with error
+}
+
+# Final Cleanup of unwanted data
+delete columns syndicationPartnerSubscriptionNumber offerId durableOfferId offerName domainName billingCycleType subscriptionStartDate subscriptionEndDate chargeType unitPrice amount totalOtherDiscount subtotal tax totalForCustomer currency invoiceLineItemType detailLineItemId sku includedQuantity overageQuantity listPrice pretaxCharges taxAmount postTaxTotal pretaxEffectiveRate postTaxEffectiveRate customerCompanyName invoiceNumber consumedQuantity
+
+# Export ratecard to be used in the daily transformers
+export invoice.billingitems as "AzureCSP/Invoice/${bukkityear}${bukkitmonth}_Invoice_Ratecard.csv"
