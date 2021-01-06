@@ -1,0 +1,101 @@
+# Veeam Endpoint (IP/hostname)
+public var veeam_endpoint = "10.0.0.1"
+# Veeam endpoint port number (default: 8100)
+public var veeam_port = "8100"
+# Veeam Api UserName
+public var api_user = "apiuser"
+# Veeam Api Password
+public var api_password = "api_password"
+# Directory where data is exported to
+public var exportdir = "system/extracted/Veeam"
+
+# Setup Loglevel
+loglevel INFO
+# Setup API endpoint
+var httproot = "https://${veeam_endpoint}:${veeam_port}/api/v1"
+# Setup JSON output folder
+var jsonfolder = "${exportdir}/JSON"
+
+# Create output CSV files
+csv "vms" = "${exportdir}/${YEAR}${MONTH}${DAY}_VM_List.csv"
+csv add_headers "vms" VMId VMName
+csv fix_headers "vms"
+
+csv "restorepoints" = "${exportdir}/${YEAR}${MONTH}${DAY}_RestorePoint_List.csv"
+csv add_headers "restorepoints" VMId backupSizeBytes RPId
+csv fix_headers "restorepoints"
+
+
+
+# Login to Veeam
+clear http_headers
+set http_secure no
+set http_header "Content-Type: application/json"
+set http_header "Accept: application/json"
+set http_body data "{ \"@odata.type\": \"LoginData\", \"userName\": \"${api_user}\", \"password\": \"${api_password}\", \"longExpDate\": true}"
+
+buffer token = http POST "${httproot}/Account/login"
+if (${HTTP_STATUS_CODE} != 200) {
+	gosub write_http_error (${HTTP_STATUS_CODE})
+}
+clear http_headers
+clear http_body
+
+var access_token = $JSON{token}.[token]
+var access_token = (@SUBSTR("${access_token}", 8))
+discard {token}
+
+# Collect all Veeam VMs
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Authorization: Bearer ${access_token}"
+set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_All_VM_List.json"
+buffer VMs = http GET "${httproot}/vms"
+
+# Collect detailed individual VMs
+foreach $JSON{VMs}.[Members] as this_vm {
+	var vmuri = $JSON(this_vm).[@odata.id]
+	var vmid = (@SUBSTR("${vmuri}", 13))
+
+	clear http_headers
+	set http_header "Accept: application/json"
+	set http_header "Authorization: Bearer ${access_token}"
+	set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_VM_${vmid}.json"
+	buffer test_vm = http GET "https://${veeam_endpoint}:${veeam_port}${vmuri}"
+
+	var vmname = $JSON{test_vm}.[name]
+	
+	csv write_field vms ${vmid}
+	csv write_field vms ${vmname}
+}
+
+
+# Collect all Veeam RestorePoints
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Authorization: Bearer ${access_token}"
+set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_All_RestorePoint_List.json"
+buffer RestorePoints = http GET "${httproot}/vms/restorepoints"
+
+foreach $JSON{RestorePoints}.[] as this_RestorePoint {
+	var VMId			=	$JSON(this_RestorePoint).[instanceId]
+	var backupSizeBytes	=	$JSON(this_RestorePoint).[backupSizeBytes]
+	var RPId			=	$JSON(this_RestorePoint).[id]
+
+	csv write_field restorepoints ${VMId}
+	csv write_field restorepoints ${backupSizeBytes}
+	csv write_field restorepoints ${RPId}
+}
+
+# Finnish the csv items
+csv close "vms"
+csv close "restorepoints"
+
+#### Subroutines ####
+subroutine write_http_error {
+	#Subroutine vars
+	#${SUBARG_1} = HTTP_STATUS_CODE
+
+	print Got HTTP status ${SUBARG_1}, expected a status of 200
+	terminate with error
+}

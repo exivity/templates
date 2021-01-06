@@ -1,0 +1,36 @@
+# Veeam Transformer
+
+# Setup import directory (Same as export directory of the Veeam Extractor)
+var importdir = "system/extracted/Veeam"
+
+# Import items
+import "${importdir}/${dataDate}_VM_List.csv" source Veeam alias virtualmachines
+import "${importdir}/${dataDate}_RestorePoint_List.csv" source Veeam alias restorepoints
+import "import/lookup/Customer_Lookup_Table.csv" source lookup alias customer
+
+default dset Veeam.restorepoints
+
+correlate VMName using VMId assuming Veeam.virtualmachines
+where ([backupSizeBytes] == 0) {
+    delete row
+} 
+uppercase values in columns VMId RPId
+
+calculate column backupSizeBytes as column backupSizeBytes / value 1024
+calculate column backupSizeBytes as column backupSizeBytes / value 1024
+calculate column backupSizeBytes as column backupSizeBytes / value 1024
+
+rename column backupSizeBytes to quantity
+rename column RPId to instance
+create mergedcolumn instance_temp separator "_" from VMName instance
+set instance as instance_temp
+delete column instance_temp
+create column unit value GB
+create column interval value Monthly
+create column charge_model value Peak
+create column service_category value "CompanyName Backup"
+create column service_name value "CompanyName Backup"
+create column service_key value "CompanyName_Backup"
+create column rate value 0
+
+export Veeam.restorepoints as "Veeam/${dataDate}_Backup.csv"

@@ -1,0 +1,30 @@
+# Nutanix Transformer
+
+# Setup import directory (Same as export directory of the Nutanix Extractor)
+var importdir = "system/extracted/Nutanix"
+
+# Import items
+import "${importdir}/${dataDate}_VM_List.csv" source nutanix alias vm
+
+# Normalize items
+default dset nutanix.vm
+uppercase values in columns entityid vmid ownerid projectid clusterid
+capitalise values in columns ownername projectname
+
+# Cleanup items
+default dset nutanix.vm
+rename column type to service_name
+where ([quantity] == "EXIVITY_NOT_FOUND") {
+    set quantity to 0
+} 
+where ([entityname] == [vmname]) {
+    set entityname to "VM"
+}
+rename column vmname to instance
+create column service_category value Nutanix
+aggregate nutanix.vm notime service_name match instance match vmid match projectname match instance match quantity sum
+delete columns clustername clusterid ownername ownerid description entityid EXIVITY_AGGR_COUNT projectid entityname
+
+# Export items to be used in consolidation
+default dset nutanix.vm
+export nutanix.vm as "Nutanix/${dataDate}_VM.csv"
