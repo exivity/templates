@@ -1,0 +1,97 @@
+#################################################################
+# This USE script will download a resource group information    #
+#                                                               #
+# This needs no parameters                                      #
+# --------------------------------------------------------------#
+# NOTES:                                                        #
+# - You will need to change the JSON paths to match the         #
+#   tags of your resource groups                                #
+#################################################################
+
+
+loglevel INFO
+# the client id of the applicatoin
+public var client_id = "<AzureEA-app-client-id>"
+# the secret of the application
+public var secret = "<AzureEA-app-secret>"
+# your tenant GUID or domain name onmicrosoft
+public var MyDomain = "mydomain.onmicrosoft.com"
+# authentication end point of Azure
+public var auth_endpoint = "https://login.windows.net"
+# the resource domain where we are pulling data from
+public var resource = "https://management.azure.com/"
+# the subscriptionId where we need to obtain data for (this can be a list in json format)
+public var subscriptionId = "<you-subscription-guid>"
+# File locations. These should exist inside your Exivity home folder
+public var exportdir = "system/extracted/AzureEA"
+public var json_filedir = "${exportdir}"
+public var export_file = "${exportdir}/rsg_tags.csv"
+
+# ensure secret is encoded
+uri component-encode "secret"
+
+# Get an AD token from login.windows.net
+print "Getting AD Token"
+
+# Set up the HTTP request parameters
+clear http_headers
+set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${secret}&resource=${resource}"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_savefile "${json_filedir}\http_savefile.json"
+buffer token = http POST "${auth_endpoint}/${MyDomain}/oauth2/token"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate
+}
+
+print "Succesfully authenticated!"
+print -----------------------------------
+
+# Create a variable called ${access_token} from the AD token in {token}
+var access_token = $JSON{token}.[access_token]
+discard {token}
+
+# Reset headers as we want to create a new Authorization: header
+clear http_headers
+
+# Set up the HTTP request parameters
+set http_header "Authorization: Bearer ${access_token}"	
+set http_savefile "${json_filedir}\http_savefile_resource_groups.json"
+
+buffer resource_groups = http GET "https://management.azure.com/subscriptions/${subscriptionId}/resourcegroups?api-version=2017-05-10"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {resource_groups} 
+	print {resource_groups}
+	terminate
+}
+
+print Exporting resource groups to ${export_file}
+csv "rsg_tags" = "${export_file}"
+
+# Make sure to include your own headers here
+csv add_headers "rsg_tags" rsg_id "Resource Group" rsg_location rsg_tag_CostCenter rsg_tag_2 rsg_tag_3 rsg_provisioningState
+csv fix_headers "rsg_tags"
+
+# Iterate through the customers and populate the file
+foreach $JSON{resource_groups}.[value] as rsg_tags
+{
+	# Define the fields to export to match the headers
+	csv write_field rsg_tags $JSON(rsg_tags).[id]
+	csv write_field rsg_tags $JSON(rsg_tags).[name]
+	csv write_field rsg_tags $JSON(rsg_tags).[location]
+	#
+	# Make sure to include your own tags here!
+	#
+	csv write_field rsg_tags $JSON(rsg_tags).[tags].["Cost Center"]
+	csv write_field rsg_tags $JSON(rsg_tags).[tags].[tag_2]
+	csv write_field rsg_tags $JSON(rsg_tags).[tags].[tag_3]
+	csv write_field rsg_tags $JSON(rsg_tags).[provisioningState]
+}
+csv close rsg_tags
+
+print Succesfully obtained Resource Groups!
