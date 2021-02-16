@@ -1,21 +1,23 @@
 #################################################################
 # 
-#  This Transformer will create a custom ratecard based on a collected invoice
+#  This Transformer will create a custom ratecard and fill custom usage items, based on a collected invoice
 #
 #  Please consult https://docs.exivity.com/ for more info.
 #
 # ==========================================================
 
 # Transformer Config #
-var importdir = "system/extracted/AzureCSP"
+# Your CSP domain, usually xxxx.onmicrosoft.com
+var MyDomain = "<Microsoft_Domain>"
 
 # Monthly charge startday
 var csp_charge_startday = 01
 
 # Default Name items
-var default_customer = "My Company"
-var default_partner_name = "My PartnerName"
-var default_partner_Billable_Account_Id = "My bill account ID"
+var default_customer = "<Default_Customer>"
+var default_partner_name = "<Default_Partner_Name>"
+var default_partner_Billable_Account_Id = "<Default_Billable_Account_ID>"
+
 # Transformer Config #
 
 
@@ -23,14 +25,17 @@ var default_partner_Billable_Account_Id = "My bill account ID"
 option loglevel = INFO
 
 
-# Define storage location of AzurePlan
+# Define storage location of Azure Items
+var importdir = "system/extracted/${MyDomain}/AzureCSP"
 var azureplandir = "${importdir}/AzurePlan"
 
 # Define import dir based on Bukkit information
+
+var prevmonth = @DTADD(${dataDate}, -1 , MONTH)
+var storemonth = @SUBSTR(${prevmonth}, 5, 2)
+var storeyear = @SUBSTR(${prevmonth}, 1, 4)
+
 if (${dataDay} < ${csp_charge_startday}) {
-    var prevmonth = @DTADD(${dataDate}, -1 , MONTH)
-    var storemonth = @SUBSTR(${prevmonth}, 5, 2)
-    var storeyear = @SUBSTR(${prevmonth}, 1, 4)
     var importdir = "${importdir}/${storeyear}/${storemonth}"
     var bukkityear = "${storeyear}"
     var bukkitmonth = "${storemonth}"
@@ -39,6 +44,12 @@ if (${dataDay} < ${csp_charge_startday}) {
     var bukkityear = "${dataYear}"
     var bukkitmonth = "${dataMonth}"
 }
+
+# Define charge dates for the invoice of Azure Legacy
+var charge_start_date = "${storeyear}${storemonth}${csp_charge_startday}"
+var charge_end_day = "${csp_charge_startday}"-1
+var charge_end_date = "${dataYear}${dataMonth}${charge_end_day}"
+
 
 # Define this day usageStartTime
 var this_day_usage_start_time = "${dataYear}-${dataMonth}-${dataDay}T00:00:00+00:00"
@@ -50,9 +61,22 @@ var this_day_usage_start_time = "${dataYear}-${dataMonth}-${dataDay}T00:00:00+00
 if (@FILE_EXISTS("${importdir}/Invoice/${bukkityear}${bukkitmonth}_csp_bill.csv")) {
     var invoiceitemsimport = yes
     import "${importdir}/Invoice/${bukkityear}${bukkitmonth}_csp_bill.csv" source invoice alias billingitems
+    import "${importdir}/Invoice/${bukkityear}${bukkitmonth}_csp_bill.csv" source invoice alias correlationfile
 } else {
     var invoiceitemsimport = no
     terminate
+}
+
+# Azure Bukkit Legacy Usage Import
+if  (@FILE_EXISTS("${importdir}/AzureUsage/${dataDate}_csp_usage.csv")) {
+    var usageimport = yes
+    import "${importdir}/AzureUsage/${dataDate}_csp_usage.csv" source azure alias dayusage
+
+    import "${importdir}/AzureUsage/\d{8}_csp_usage.csv" source azure alias monthusage options {
+        pattern enabled
+    }
+} else {
+    var usageimport = no
 }
 
 # AzurePlan import for AzurePlan SubscriptionNames (Will use the default names if items not available or partner does not have AzurePlan)
@@ -66,11 +90,57 @@ if (@FILE_EXISTS("${azureplandir}/csp_usage_azureplan_${bukkityear}${bukkitmonth
 }
 #################### Import items ####################
 
+#################### Alter Usage #####################
+
+if (${usageimport} == yes) {
+    default dset invoice.correlationfile
+    where ([billingProvider] != "azure") {
+        delete row
+    }
+    #delete columns except customerId subscriptionId resourceGuid consumedQuantity
+    rename column customerId to customer_id
+    rename column subscriptionId to subscription_id
+    rename column resourceGuid to resource_id
+    create mergedcolumn correlationcolumn separator "|" from resource_id subscription_id customer_id
+    uppercase values in column correlationcolumn
+
+
+    default dset azure.monthusage
+    delete columns except customer_id subscription_id resource_id quantity
+    aggregate azure.monthusage default_function match quantity sum
+    create mergedcolumn correlationcolumn separator "|" from resource_id subscription_id customer_id
+    uppercase values in column correlationcolumn
+    correlate consumedQuantity using correlationcolumn assuming invoice.correlationfile
+
+    rename column quantity to usagequantity
+    rename column consumedQuantity to invoicequantity
+    where ([invoicequantity] == "") {
+        copy row to exclusion.orphanusage
+        delete row
+    }
+    
+    default dset azure.dayusage
+    create mergedcolumn correlationcolumn separator "|" from resource_id subscription_id customer_id
+    uppercase values in column correlationcolumn
+    correlate usagequantity invoicequantity using correlationcolumn assuming azure.monthusage
+    where ([invoicequantity] == "") {
+        delete row
+    } 
+    aggregate azure.dayusage default_function match quantity sum
+    create column proportionnumber value ""
+    calculate column proportionnumber as column quantity / column usagequantity
+    calculate column quantity as column invoicequantity * column proportionnumber
+    delete columns usagequantity invoicequantity EXIVITY_AGGR_COUNT proportionnumber correlationcolumn
+    
+}
+
+#################### Alter Usage #####################
 
 ################## Normalize items ###################
 
 # Normalize invoice import
 if (${invoiceitemsimport} == yes) {
+    default dset invoice.billingitems
     # Format GUID's
     uppercase values in columns partnerId customerId subscriptionId syndicationPartnerSubscriptionNumber offerId durableOfferId resourceGuid
 
@@ -145,4 +215,6 @@ if (${invoiceitemsimport} == yes) {
 delete columns syndicationPartnerSubscriptionNumber offerId durableOfferId offerName domainName billingCycleType subscriptionStartDate subscriptionEndDate chargeType unitPrice amount totalOtherDiscount subtotal tax totalForCustomer currency invoiceLineItemType detailLineItemId sku includedQuantity overageQuantity listPrice pretaxCharges taxAmount postTaxTotal pretaxEffectiveRate postTaxEffectiveRate customerCompanyName invoiceNumber consumedQuantity
 
 # Export ratecard to be used in the daily transformers
-export invoice.billingitems as "AzureCSP/Invoice/${bukkityear}${bukkitmonth}_Invoice_Ratecard.csv"
+export invoice.billingitems as "AzureCSP/${MyDomain}/Invoice/${bukkityear}${bukkitmonth}_Invoice_Ratecard.csv"
+export azure.dayusage as "AzureCSP/${MyDomain}/Usage/${dataDate}_Invoice_Usage.csv"
+export exclusion.orphanusage as "AzureCSP/${MyDomain}/Usage/Exclusions/${bukkityear}${bukkitmonth}_Orphaned_Usage.csv"

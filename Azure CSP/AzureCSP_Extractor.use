@@ -1,8 +1,6 @@
 ## Global variables
 # Your CSP domain, usually xxxx.onmicrosoft.com
 public var MyDomain = "xxxx.onmicrosoft.com"
-# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
-public var exportdir = "system/extracted/AzureCSP"
 # Make sure to set this to your CSP currency (3 character ISO currency code)
 public var currency = "EUR"
 # Make sure to set this to your CSP region (2 character ISO country code)
@@ -10,9 +8,9 @@ public var region = "NL"
 # Legacy Azure CSP charge start date (can be found on invoice)
 public var csp_charge_startday = "01"
 # Application ID of the Partner Center Web Application
-public var client_id = "<Client-App-GUID>"
+public var client_id = "<Client-ID>"
 # Secret that belongs to the client application GUID
-public encrypted var secret = "client_secret"
+public encrypted var secret = "<Client-Secret>"
 # If using internal usage, specificy IUR GUID 
 public var IUR_id = "<Internal-Usage-Subscription-GUID>"
 # Should I collect Azure Usage (yes/no)
@@ -32,6 +30,11 @@ public var Collect_Azure_invoice = "yes"
 # Set loglevel
 loglevel INFO
 
+# Standard location for writing extracted files, relative to %EXIVITY_HOME_PATH%
+var exportdir = "system/extracted/${MyDomain}/AzureCSP"
+# Overwrite the invoice if necessary
+var overwrite_invoice = no
+
 # Make sure that the IUR Usage extractor never runs out of subscriptions
 if (${Collect_Azure_IUR_Usage} == yes) {
 	var Collect_Azure_IUR_Subscription = yes
@@ -50,9 +53,6 @@ var online_subscriptions = yes
 
 # Define Partnerroot
 var partnerroot = "https://api.partnercenter.microsoft.com"
-
-# Reset invoice tracker
-var Collect_Azure_invoice_new = no
 
 # Encode items for token
 uri encode-component client_id
@@ -163,7 +163,7 @@ loop date_range ${loopcount} {
 
 	var offset = ((@DATEDIFF(${basedate}, ${requestdate}))/30.436875)
 	var offset = (@ROUND("${offset}",0))
-	var offset = (${offset}-1)
+	#var offset = (${offset}-1)
 		
 	# Define bukkits
 	var previousbukkitdir = "${exportdir}/${previousbukkit_year}/${previousbukkit_month}"
@@ -471,12 +471,12 @@ loop date_range ${loopcount} {
         	csv add_headers "azureplan" partnerId partnerName customerId customerName customerDomainName invoiceNumber productId skuId availabilityId skuName productName publisherName publisherId subscriptionId subscriptionDescription chargeStartDate chargeEndDate usageDate meterType meterCategory meterId meterSubCategory meterName meterRegion unitOfMeasure resourceLocation consumedService resourceGroup resourceUri customerCountry mpnId resellerMpnId chargeType unitPrice quantity unitType billingPreTaxTotal billingCurrency pricingPreTaxTotal pricingCurrency entitlementId entitlementDescription pcToBCExchangeRate pcToBCExchangeRateDate effectiveUnitPrice rateOfPartnerEarnedCredit billingProvider
         	csv fix_headers "azureplan"
 
-			# Get the authtoken, output is ${access_token}
-        	gosub get_authtoken (${MyDomain}, ${client_id}, ${secret})
-
 			var address = "invoices/unbilled/lineitems?provider=onetime&invoicelineitemtype=usagelineitems&currencycode=${currency}&period=current"
 			loop InvoicesLoop {  
 				
+				# Get the authtoken, output is ${access_token}
+        		gosub get_authtoken (${MyDomain}, ${client_id}, ${secret})
+
 				# Setup HTTP request headers
 				clear http_headers
 				set http_header "Accept: application/json"
@@ -567,11 +567,11 @@ loop date_range ${loopcount} {
         	csv add_headers "azureplan" partnerId partnerName customerId customerName customerDomainName invoiceNumber productId skuId availabilityId skuName productName publisherName publisherId subscriptionId subscriptionDescription chargeStartDate chargeEndDate usageDate meterType meterCategory meterId meterSubCategory meterName meterRegion unitOfMeasure resourceLocation consumedService resourceGroup resourceUri customerCountry mpnId resellerMpnId chargeType unitPrice quantity unitType billingPreTaxTotal billingCurrency pricingPreTaxTotal pricingCurrency entitlementId entitlementDescription pcToBCExchangeRate pcToBCExchangeRateDate effectiveUnitPrice rateOfPartnerEarnedCredit billingProvider
         	csv fix_headers "azureplan"
 
-			# Get the authtoken, output is ${access_token}
-        	gosub get_authtoken (${MyDomain}, ${client_id}, ${secret})
-
 			var address = "invoices/unbilled/lineitems?provider=onetime&invoicelineitemtype=usagelineitems&currencycode=${currency}&period=previous"
 			loop InvoicesLoop {  
+
+				# Get the authtoken, output is ${access_token}
+        		gosub get_authtoken (${MyDomain}, ${client_id}, ${secret})
 				
 				# Setup HTTP request headers
 				clear http_headers
@@ -827,13 +827,9 @@ loop date_range ${loopcount} {
 				var billing_export_file = "${previousbukkitdir}/Invoice/${previousbukkit_year}${previousbukkit_month}_csp_bill.csv"
 				var json_filedir = "${previousbukkitdir}/Invoice/json"
 
-				if (@FILE_EXISTS("${billing_export_file}")) {
+				if (@FILE_EXISTS("${billing_export_file}") && ${overwrite_invoice} != yes) {
 					print "|Skipping| Azure invoice collection. (Already have invoice)"
 				} else {
-					csv "billing" = "${billing_export_file}"
-					csv add_headers "billing" partnerId customerId customerName mpnId tier2MpnId orderId subscriptionId syndicationPartnerSubscriptionNumber offerId durableOfferId offerName domainName billingCycleType subscriptionName subscriptionDescription subscriptionStartDate subscriptionEndDate chargeStartDate chargeEndDate chargeType unitPrice quantity amount totalOtherDiscount subtotal tax totalForCustomer currency invoiceLineItemType billingProvider detailLineItemId sku includedQuantity overageQuantity listPrice pretaxCharges taxAmount postTaxTotal pretaxEffectiveRate postTaxEffectiveRate partnerName partnerBillableAccountId customerCompanyName invoiceNumber serviceName serviceType resourceGuid resourceName region consumedQuantity
-					csv fix_headers "billing"
-
 					# Get authtoken (Returns: ${access_token})
 					gosub get_authtoken (${MyDomain}, ${client_id}, ${secret})
 
@@ -842,9 +838,14 @@ loop date_range ${loopcount} {
 					set http_header "Accept: application/json"
 					set http_header "Authorization: Bearer ${access_token}"	
 					buffer invoices = http GET "${partnerroot}/v1/invoices?size=1&offset=${offset}"
+					print offset is ${offset}
 					if (${HTTP_STATUS_CODE} != 200) {
 						gosub write_http_error (${HTTP_STATUS_CODE})
 					}
+
+					csv "billing" = "${billing_export_file}"
+					csv add_headers "billing" partnerId customerId customerName mpnId tier2MpnId orderId subscriptionId syndicationPartnerSubscriptionNumber offerId durableOfferId offerName domainName billingCycleType subscriptionName subscriptionDescription subscriptionStartDate subscriptionEndDate chargeStartDate chargeEndDate chargeType unitPrice quantity amount totalOtherDiscount subtotal tax totalForCustomer currency invoiceLineItemType billingProvider detailLineItemId sku includedQuantity overageQuantity listPrice pretaxCharges taxAmount postTaxTotal pretaxEffectiveRate postTaxEffectiveRate partnerName partnerBillableAccountId customerCompanyName invoiceNumber serviceName serviceType resourceGuid resourceName region consumedQuantity
+					csv fix_headers "billing"
 
 					foreach $JSON{invoices}.[items] as this_invoice {
 						# Define the fields to export to match the headers
@@ -857,7 +858,7 @@ loop date_range ${loopcount} {
 								loop invoices {
 									# # # print "Getting Billing invoice for month ${actualmonth}..."
 									clear http_headers
-									set http_savefile "${json_filedir}/invoiceNumber${this_item.COUNT}.json"
+									set http_savefile "${json_filedir}/invoiceNumber_${this_invoice.COUNT}_${this_item.COUNT}.json"
 									set http_header "Accept: application/json"
 									set http_header "Authorization: Bearer ${access_token}"	
 									buffer lineItems = http GET "${partnerroot}/v1/${address}"
