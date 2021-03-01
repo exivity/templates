@@ -20,13 +20,14 @@ var exportdir = "no"
 var csp_charge_startday = 14
 
 # Default markup from Microsoft
+
 var microsoft_markup = "15"
 
 # Default Name items
-var default_customer = "Customer Name"
+var default_customer = "Default Customer"
 
 # Name of the DSET (Will be prefixed with AzureCSP e.g. AzureCSP.dsetname) May not contain spaces or special characters.
-var dsetname = "CustomerName"
+var dsetname = "Result"
 
 # Transformer Config #
 
