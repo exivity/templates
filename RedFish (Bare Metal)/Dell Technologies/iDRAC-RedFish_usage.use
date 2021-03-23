@@ -1,0 +1,97 @@
+# Extractor
+# 1 - turn on telemtry:
+#  PATCH https://<server_ip>/redfish/v1/Managers/iDRAC.Embedded.1/Attributes
+#   JSON: { "Attributes": {"Telemetry.1.EnableTelemetry": "Enabled"}}
+# 
+# 2 - enable report (i.e. Sensor)
+#  PATCH https://<server_ip>/redfish/v1/Managers/iDRAC.Embedded.1/Attributes
+#  JSON: {"Attributes":{"TelemetrySensor.1.EnableTelemetry":"Enabled"}}
+#
+# 3 - configure retention to 2H
+# PATCH https://<server_ip>/redfish/v1/TelemetryService/MetricReportDefinitions/Sensor
+# JSON: { "ReportTimespan": "PT2H0M0S"}
+
+# now query sensors once per hour:
+# https://<server_ip>/redfish/v1/TelemetryService/MetricReports/Sensor
+
+# --------------------------------------- #
+# iDRAC RedFish Usage Telemtry Extractor
+# v0.2 - 202010323 - T.R. Rab
+# --------------------------------------- #
+
+# RedFish Endpoint ( IP/hostname)
+public var host = "<server_ip>"
+# RedFish API UserName
+public var api_user = "root"
+# RedFish API Password
+public var api_password = "password"
+# Directory where data is exported to
+public var exportdir = "system/extracted/redfish"
+
+# Setup Loglevel
+loglevel INFO
+# Setup JSON output folder
+var jsonfolder = "${exportdir}/JSON"
+# Setup JSON body folder
+var bodyfolder = "${exportdir}/RequestBody"
+# Setup output file
+var snapshot_file = "${exportdir}/${YEAR}${MONTH}${DAY}_${HOUR}_${MINUTE}_system_usage.csv"
+
+# Create output CSV file
+csv "redfish_usage" = "${snapshot_file}"
+csv add_headers "redfish_usage" UUID SKU model power_state timestamp meter_id meter_label quantity
+csv fix_headers "redfish_usage"
+
+# /// OPTIONAL - applicable when querying multiple RedFish Endpoints from a data feed
+# buffer hosts = FILE "system/extracted/hosts/hosts.json"
+# foreach $JSON{hosts}.[] as this_host {
+#	set the current host
+#	var host = $JSON(this_host)
+	
+	# Setup API endpoint for this host
+	var httproot = "https://${host}/redfish/v1"
+
+	# call system endpoint
+	clear http_headers
+	set http_secure no
+	set http_header "Accept: */*" 
+	set http_username ${api_user}
+	set http_password ${api_password}
+	set http_authtype basic
+	# system details
+    set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_system_snapshot.json"
+	buffer redfish_system = http GET "${httproot}/Systems/System.Embedded.1"
+	if (${HTTP_STATUS_CODE} != 200) {
+		gosub write_http_error (${HTTP_STATUS_CODE})
+	}
+    # telemetry details
+	set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_system_usage.json"
+	buffer redfish_telemetry = http GET "${httproot}/TelemetryService/MetricReports/Sensor"
+	if (${HTTP_STATUS_CODE} != 200) {
+		gosub write_http_error (${HTTP_STATUS_CODE})
+	}
+
+    foreach $JSON{redfish_telemetry}.[MetricValues].[] as this_metric {
+        # Write record for each meter
+        gosub write_standard_items ()
+        csv write_field redfish_usage $JSON(this_metric).[Timestamp]
+        csv write_field redfish_usage $JSON(this_metric).[MetricId]
+        csv write_field redfish_usage $JSON(this_metric).[Oem].[Dell].[Label]
+        csv write_field redfish_usage $JSON(this_metric).[MetricValue]
+    }
+# /// OPTIONAL - applicable when querying multiple RedFish Endpoints from a data feed
+# }
+csv close "redfish_usage"
+
+#### Subroutines ####
+subroutine write_http_error {
+	print Got HTTP status ${SUBARG_1}, expected a status of 200
+	terminate with error
+}
+
+subroutine write_standard_items {
+	csv write_field redfish_usage $JSON{redfish_system}.[UUID]
+	csv write_field redfish_usage $JSON{redfish_system}.[SKU]
+	csv write_field redfish_usage $JSON{redfish_system}.[Model]
+	csv write_field redfish_usage $JSON{redfish_system}.[PowerState]
+}

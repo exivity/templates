@@ -1,0 +1,96 @@
+# --------------------------------------- #
+# iDRAC RedFish System Snapshot Extractor
+# v0.2 - 202010323 - T.R. Rab
+# --------------------------------------- #
+
+# RedFish Endpoint ( IP/hostname)
+public var host = "<server-ip>"
+# RedFish API UserName
+public var api_user = "root"
+# RedFish API Password
+public var api_password = "password"
+# Directory where data is exported to
+public var exportdir = "system/extracted/redfish"
+
+# Setup Loglevel
+loglevel WARN
+# Setup JSON output folder
+var jsonfolder = "${exportdir}/JSON"
+# Setup JSON body folder
+var bodyfolder = "${exportdir}/RequestBody"
+# Setup output file
+var snapshot_file = "${exportdir}/${YEAR}${MONTH}${DAY}_${HOUR}_${MINUTE}_system_snapshot.csv"
+
+# Create output CSV file
+csv "redfish_snapshot" = "${snapshot_file}"
+csv add_headers "redfish_snapshot" UUID SKU model power_state meter quantity
+csv fix_headers "redfish_snapshot"
+
+# /// OPTIONAL - applicable when querying multiple RedFish Endpoints from a data feed
+# buffer hosts = FILE "system/extracted/hosts/hosts.json"
+# foreach $JSON{hosts}.[] as this_host {
+# 	set the current host
+#	var host = $JSON(this_host)
+	
+	# Setup API endpoint for this host
+	var httproot = "https://${host}/redfish/v1"
+
+	# call system endpoint
+	clear http_headers
+	set http_secure no
+	set http_header "Accept: */*" 
+	set http_username ${api_user}
+	set http_password ${api_password}
+	set http_authtype basic
+	set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_system_snapshot.json"
+	buffer redfish_system = http GET "${httproot}/Systems/System.Embedded.1"
+	if (${HTTP_STATUS_CODE} != 200) {
+		gosub write_http_error (${HTTP_STATUS_CODE})
+	}
+
+	# Write records for CPU
+	gosub write_standard_items ()
+	csv write_field redfish_snapshot $JSON{redfish_system}.[ProcessorSummary].[Model]
+	csv write_field redfish_snapshot $JSON{redfish_system}.[ProcessorSummary].[Count]
+	# Write records for RAM
+	gosub write_standard_items ()
+	csv write_field redfish_snapshot "MemoryGiB" 
+	csv write_field redfish_snapshot $JSON{redfish_system}.[MemorySummary].[TotalSystemMemoryGiB]
+
+	# obtain network stats
+	clear http_headers
+	set http_secure no
+	set http_header "Accept: */*" 
+	set http_username ${api_user}
+	set http_password ${api_password}
+	set http_authtype basic
+	buffer redfish_network = http GET "${httproot}/Dell/Systems/System.Embedded.1/NetworkAdapters/NetworkDeviceFunctions/DellNICStatisticsCollection"
+	if (${HTTP_STATUS_CODE} != 200) {
+		gosub write_http_error (${HTTP_STATUS_CODE})
+	}
+	foreach $JSON{redfish_network}.[Members] as this_nic {
+		# Write Rx records for each NIC
+		gosub write_standard_items ()
+		csv write_field redfish_snapshot "RxBytes $JSON(this_nic).[Id]" 
+		csv write_field redfish_snapshot $JSON(this_nic).[RxBytes]
+		# Write Tx records for each NIC
+		gosub write_standard_items ()
+		csv write_field redfish_snapshot "TxBytes $JSON(this_nic).[Id]" 
+		csv write_field redfish_snapshot $JSON(this_nic).[TxBytes]
+	}
+# /// OPTIONAL - applicable when querying multiple RedFish Endpoints from a data feed
+# } 
+csv close "redfish_snapshot"
+
+#### Subroutines ####
+subroutine write_http_error {
+	print Got HTTP status ${SUBARG_1}, expected a status of 200
+	terminate with error
+}
+
+subroutine write_standard_items {
+	csv write_field redfish_snapshot $JSON{redfish_system}.[UUID]
+	csv write_field redfish_snapshot $JSON{redfish_system}.[SKU]
+	csv write_field redfish_snapshot $JSON{redfish_system}.[Model]
+	csv write_field redfish_snapshot $JSON{redfish_system}.[PowerState]
+}
