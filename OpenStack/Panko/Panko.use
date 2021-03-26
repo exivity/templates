@@ -1,0 +1,158 @@
+#==================== Configuration ====================#
+#
+# Template Extractor for obtaining VM's data from Panko
+#
+
+ # adjust log detail to: DEBUG, INFO, WARN 
+loglevel INFO
+set http_retry_count 20
+set http_retry_delay 1000
+
+if (${ARGC} == 0 ) {    # today & now
+  var today = "${YEAR}${MONTH}${DAY}"
+} else {
+  var today = ${ARG_1}
+}
+  
+# Validate the date formats
+
+match date "^([0-9]{8})$" ${today}
+if (${date.STATUS} != MATCH) {
+  print Argument 1 error: ${today} has invalid format
+  terminate with error
+}
+# Extract the day, month and year fields from the dates
+match day "^[0-9]{6}([0-9]{2})" ${today}
+if (${day.STATUS} != MATCH) {
+  print Could not extract day from the supplied date (${today})
+  terminate with error
+} else {
+  var day = ${day.RESULT}
+}
+
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${today}
+if (${month.STATUS} != MATCH) {
+  print Could not extract month from the supplied date (${today})
+  terminate with error
+} else {
+  var month = ${month.RESULT}
+}
+
+match year "^([0-9]{4})[0-9]{4}" ${today}
+if (${year.STATUS} != MATCH) {
+  print Could not extract year from the supplied date (${today})
+  terminate with error
+} else {
+  var year = ${year.RESULT}
+}
+var MetricDate = "${year}-${month}-${day}"
+var Date = "${year}${month}${day}"
+var Tomorrow = ( @DATEADD(${Date}, 1) )
+var TomorrowYear = ( @SUBSTR(${Tomorrow}, 1,4) )
+var TomorrowMonth = ( @SUBSTR(${Tomorrow}, 5,2) )
+var TomorrowDay = ( @SUBSTR(${Tomorrow}, 7,2) )
+var Tomorrow = "${TomorrowYear}-${TomorrowMonth}-${TomorrowDay}"
+
+print extracting for ${MetricDate} - ${Tomorrow}
+
+# panko user account
+public var username = "username"
+# panko password
+public var password = ""
+# hostname of the Panko API
+public var panko_host = "your.panko.local"
+# port of the panko API
+public var panko_port = "8977"
+# hostname of the keystone server (can be same as Panko)
+public var keystone_host = "your.keystone.local"
+# port of the keystone server
+public var keystone_port = "5000"
+# export folder
+public var exportdir = "system/extracted/Panko" 
+
+# set folder and file variables
+var jsondir = "${exportdir}/json"
+
+# Get the initial token or renew it
+gosub authentication() 
+
+# define events and metrics
+var events = "compute.instance.create.end"
+var query = "q.field=event_type&q.op=eq&q.value=${events}&q.field=start_timestamp&q.op=ge&q.value=${MetricDate}T00%3A00%3A00%2B00%3A00&q.field=end_timestamp&q.op=le&q.value=${Tomorrow}T00%3A00%3A00%2B00%3A00&"
+
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "X-Auth-Token: ${os_auth}"
+var PankoJSON = "${jsondir}/${events}.json"
+set http_savefile ${PankoJSON}
+
+# compute_instance_create_end
+buffer eventlist = http GET "https://${panko_host}:${panko_port}/v2/events?${query}q.field=all_tenants&q.op=eq&q.value=true"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Server response was ${HTTP_STATUS_CODE} (expected 201)
+    discard {eventlist}
+    terminate with error
+}
+
+# prepare the CSV
+csv "this_CSV" = "${exportdir}/${Date}_${events}.csv"
+foreach $JSON{eventlist}.[] as this_event {
+  foreach $JSON(this_event).[traits] as this_field {
+    var name = $JSON(this_field).[name]
+    csv add_header "this_CSV" ${name}
+  }
+  exit_loop
+}
+csv fix_headers "this_CSV"
+
+# write the records
+foreach $JSON{eventlist}.[] as this_event {
+  var generated = $JSON(this_event).[generated]
+  var message_id = $JSON(this_event).[message_id]
+
+  foreach $JSON(this_event).[traits] as this_trait {
+    var name = $JSON(this_trait).[name]
+    if ( ${name} == "metadata" ) {
+      var metadata = $JSON(this_trait).[value]
+      if ( "${metadata}" == "{}" ) {
+        var metadata = ""
+      }
+      csv write_field this_CSV ${metadata}
+    } else {
+      csv write_field this_CSV "$JSON(this_trait).[value]"
+    }
+  }
+}
+
+
+ ######  ##     ## ########  ########   #######  ##     ## ######## #### ##    ## ########  ######  
+##    ## ##     ## ##     ## ##     ## ##     ## ##     ##    ##     ##  ###   ## ##       ##    ## 
+##       ##     ## ##     ## ##     ## ##     ## ##     ##    ##     ##  ####  ## ##       ##       
+ ######  ##     ## ########  ########  ##     ## ##     ##    ##     ##  ## ## ## ######    ######  
+      ## ##     ## ##     ## ##   ##   ##     ## ##     ##    ##     ##  ##  #### ##             ## 
+##    ## ##     ## ##     ## ##    ##  ##     ## ##     ##    ##     ##  ##   ### ##       ##    ## 
+ ######   #######  ########  ##     ##  #######   #######     ##    #### ##    ## ########  ######
+
+#================= Authorization section start =========#
+subroutine authentication {
+  var login = "${username}"
+
+  # Set up the HTTPS request parameters
+  clear http_headers
+  set http_header "Content-Type: application/json"
+  set http_body data "{\"auth\": {\"identity\": {\"methods\": [\"password\"],\"password\": {\"user\": {\"name\": \"${username}\",\"domain\": {\"id\": \"default\" },\"password\": \"${password}\"}}},\"scope\": {\"project\": {\"name\": \"billing-dev_ro\",\"domain\": { \"id\": \"default\" }}}}}"	
+
+  set http_savefile "${jsondir}/auth.json"
+  buffer token = http POST "https://${keystone_host}:${keystone_port}/v3/auth/tokens"
+  print "Authorization ..."
+
+  if (${HTTP_STATUS_CODE} != 201) {
+    print Server response was ${HTTP_STATUS_CODE} (expected 201)
+    discard {token}
+    terminate with error
+  }
+  
+  http get_header "X-Subject-Token" as os_auth
+  print "Authorization completed."
+} 
+# End
