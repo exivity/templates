@@ -140,7 +140,8 @@ subroutine authentication {
   # Set up the HTTPS request parameters
   clear http_headers
   set http_header "Content-Type: application/json"
-  set http_body data "{\"auth\": {\"identity\": {\"methods\": [\"password\"],\"password\": {\"user\": {\"name\": \"${username}\",\"domain\": {\"id\": \"default\" },\"password\": \"${password}\"}}},\"scope\": {\"project\": {\"name\": \"billing-dev_ro\",\"domain\": { \"id\": \"default\" }}}}}"	
+  # NOTE - May need to change auth payload here. Consider changing: project: --> name: "default"
+  set http_body data "{\"auth\": {\"identity\": {\"methods\": [\"password\"],\"password\": {\"user\": {\"name\": \"${username}\",\"domain\": {\"id\": \"default\" },\"password\": \"${password}\"}}},\"scope\": {\"project\": {\"name\": \"default\",\"domain\": { \"id\": \"default\" }}}}}"	
 
   set http_savefile "${jsondir}/auth.json"
   buffer token = http POST "https://${keystone_host}:${keystone_port}/v3/auth/tokens"
