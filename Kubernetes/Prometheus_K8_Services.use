@@ -1,0 +1,282 @@
+loglevel INFO
+#################################################################
+# This template will retrieve Kubernetes metrics and labels     #
+#                                                               #
+# This needs one parameter:
+# - consumption date in YYYYMMDD format
+# - If no parameter is given, it will assume today
+#
+# --------------------------------------------------------------#
+if (${ARGC} == 0) {
+	var today = ${YEAR}${MONTH}${DAY}
+}
+if (${ARGC} > 0) {
+# Validate the date formats
+	var today = ${ARG_1}
+	match date "^([0-9]{8})$" ${today}
+	if (${date.STATUS} != MATCH) {
+		print Argument 1 error: ${today} is not in today format YYYYMMDD
+		terminate with error
+	}
+}
+#
+# Set global configuration
+#
+public var prometheus_endpoint = "<ip>" # end point of the Prometheus API
+public var prometheus_port = "9090" # Port of the Prometheus API
+public var step = "1h" # aggregation step interval in seconds (s) minutes (m) or hours (h)
+public var exportdir = "system/extracted/prometheus" # default export folder on disk
+#
+#=================  End Configuration ==================#
+
+#=================  Date Formatting  ==================#
+#
+# Extract the start day, month and year fields from the dates
+#
+match day "^[0-9]{6}([0-9]{2})" ${today}
+if (${day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${today})
+	terminateterminate
+} else {
+	var day = ${day.RESULT}
+}
+match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${today}
+if (${month.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${today})
+	terminate
+} else {
+	var month = ${month.RESULT}
+}
+match year "^([0-9]{4})[0-9]{4}" ${today}
+if (${year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${today})
+	terminate
+} else {
+	var year = ${year.RESULT}
+}
+# define dataDate and start_time variables
+var dataDate = "${year}${month}${day}"
+var start_time = "${year}-${month}-${day}T00:00:00Z"
+# always extract for not more then 1 day
+var end_date = (@DATEADD(${year}${month}${day}, 1))
+
+#
+# Extract the end day, month and year fields from the dates
+#
+match next_day "^[0-9]{6}([0-9]{2})" ${end_date}
+if (${next_day.STATUS} != MATCH) {
+	print Could not extract day from the supplied date (${end_date})
+	terminate with error
+} else {
+	var next_day = ${next_day.RESULT}
+}
+match next_month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${end_date}
+if (${next_month.STATUS} != MATCH) {
+	print Could not extract month from the supplied date (${end_date})
+	terminate with error
+} else {
+	var next_month = ${next_month.RESULT}
+}
+match next_year "^([0-9]{4})[0-9]{4}" ${end_date}
+if (${next_year.STATUS} != MATCH) {
+	print Could not extract year from the supplied date (${end_date})
+	terminate with error
+} else {
+	var next_year = ${next_year.RESULT}
+}
+# define end time for date range pulls
+var end_time = "${next_year}-${next_month}-${next_day}T00:00:00Z"
+#
+#=================  End Date Formatting ==================#
+
+#=================  CSV Formatting ==================#
+#
+var cpu_export_file = "${exportdir}/${dataDate}_prometheus_cpu_seconds.csv"
+var memory_export_file = "${exportdir}/${dataDate}_prometheus_memory_bytes.csv"
+var labels_export_file = "${exportdir}/${dataDate}_prometheus_pod_labels.csv"
+var services_export_file = "${exportdir}/${dataDate}_prometheus_kube_services_info.csv"
+
+# CPU minutes
+csv "cpu_seconds_csv" = ${cpu_export_file}
+csv add_headers "cpu_seconds_csv" beta_kubernetes_io_arch beta_kubernetes_io_instance_type beta_kubernetes_io_os container cpu failure_domain_beta_kubernetes_io_region failure_domain_beta_kubernetes_io_zone id image instance job k8s_cluster kubernetes_io_arch kubernetes_io_hostname kubernetes_io_os name namespace node_hw node_role pod start_time end_time cpu_seconds
+csv fix_headers "cpu_seconds_csv"
+
+# Memory bytes
+csv "memory_bytes_csv" = ${memory_export_file}
+csv add_headers "memory_bytes_csv" beta_kubernetes_io_arch beta_kubernetes_io_instance_type beta_kubernetes_io_os container failure_domain_beta_kubernetes_io_region failure_domain_beta_kubernetes_io_zone id instance job k8s_cluster kubernetes_io_arch kubernetes_io_hostname kubernetes_io_os name namespace node_hw node_role pod start_time end_time memory_bytes
+csv fix_headers "memory_bytes_csv"
+
+# POD Labels
+csv "pod_labels_csv" = ${labels_export_file}
+csv add_headers "pod_labels_csv" app_kubernetes_io_instance app_kubernetes_io_managed_by app_kubernetes_io_name component environment helm_sh_chart instance job k8s_cluster kubernetes_name kubernetes_namespace kubernetes_node label_app label_component label_environment label_service label_stage label_team namespace pod start_time end_time
+csv fix_headers "pod_labels_csv"
+
+# Kube Services
+csv "kube_services_csv" = ${services_export_file}
+csv add_headers "kube_services_csv" app_kubernetes_io_instance app_kubernetes_io_managed_by app_kubernetes_io_name cluster_ip component environment helm_sh_chart instance job k8s_cluster kubernetes_name kubernetes_namespace kubernetes_node namespace service start_time end_time
+csv fix_headers "kube_services_csv"
+
+#
+#=================  End CSV Formatting ==================#
+
+#=================  Extracting from Prometheus ==================#
+#
+
+# Get kube services
+clear http_headers
+set http_savefile "${exportdir}/${dataDate}_kube_services.json"
+buffer query_services = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/query?query=kube_service_info"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {query_services} 
+	print {query_services}
+	terminate with error
+}
+
+foreach $JSON{query_services}.[data].[result] as this_service {
+	csv write_field kube_services_csv $JSON(this_service).[metric].[app_kubernetes_io_instance]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[app_kubernetes_io_managed_by]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[app_kubernetes_io_name]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[cluster_ip]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[component]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[environment]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[helm_sh_chart]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[instance]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[job]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[k8s_cluster]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[kubernetes_name]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[kubernetes_namespace]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[kubernetes_node]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[namespace]
+	csv write_field kube_services_csv $JSON(this_service).[metric].[service]
+	csv write_field kube_services_csv ${start_time}
+	csv write_field kube_services_csv ${end_time}
+}
+
+# Get pod labels
+clear http_headers
+set http_savefile "${exportdir}/${dataDate}_pod_labels.json"
+buffer query_labels = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/query?query=kube_pod_labels"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {query_labels} 
+	print {query_labels}
+	terminate with error
+}
+
+foreach $JSON{query_labels}.[data].[result] as this_label {
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[app_kubernetes_io_instance]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[app_kubernetes_io_managed_by]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[app_kubernetes_io_name]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[component]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[environment]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[helm_sh_chart]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[instance]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[job]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[k8s_cluster]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[kubernetes_name]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[kubernetes_namespace]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[kubernetes_node]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[label_app]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[label_component]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[label_environment]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[label_service]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[label_stage]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[label_team]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[namespace]
+	csv write_field pod_labels_csv $JSON(this_label).[metric].[pod]
+	csv write_field pod_labels_csv ${start_time}
+	csv write_field pod_labels_csv ${end_time}
+}
+
+# Get cpu seconds
+clear http_headers
+set http_savefile "${exportdir}/${dataDate}_container_cpu_seconds.json"
+buffer query_cpu = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/query?query=container_cpu_usage_seconds_total&start=${start_time}&end=${end_time}"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {query_cpu} 
+	print {query_cpu}
+	terminate with error
+}
+
+foreach $JSON{query_cpu}.[data].[result] as this_cpu {
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[beta_kubernetes_io_arch]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[beta_kubernetes_io_instance_type]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[beta_kubernetes_io_os]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[container]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[cpu]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[failure_domain_beta_kubernetes_io_region]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[failure_domain_beta_kubernetes_io_zone]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[id]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[image]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[instance]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[job]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[k8s_cluster]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[kubernetes_io_arch]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[kubernetes_io_hostname]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[kubernetes_io_os]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[name]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[namespace]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[node_hw]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[node_role]
+	csv write_field cpu_seconds_csv $JSON(this_cpu).[metric].[pod]
+	csv write_field cpu_seconds_csv ${start_time}
+	csv write_field cpu_seconds_csv ${end_time}
+	var counter = 0
+	foreach $JSON(this_cpu).[value] as this_cpu_value {
+		var counter = ${counter}+1
+		if (${counter} == 2) {
+			csv write_field cpu_seconds_csv ${this_cpu_value.VALUE}
+		}
+	}
+}
+
+# Get memory usage 
+clear http_headers
+set http_savefile "${exportdir}/${dataDate}_container_memory_bytes.json"
+# may consider using container_memory_max_usage_bytes instead
+buffer query_memory = http get "http://${prometheus_endpoint}:${prometheus_port}/api/v1/query?query=container_memory_usage_bytes&start=${start_time}&end=${end_time}"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {query_memory} 
+	print {query_memory}
+	terminate with error
+}
+
+foreach $JSON{query_memory}.[data].[result] as this_memory {
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[beta_kubernetes_io_arch]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[beta_kubernetes_io_instance_type]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[beta_kubernetes_io_os]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[container]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[failure_domain_beta_kubernetes_io_region]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[failure_domain_beta_kubernetes_io_zone]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[id]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[instance]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[job]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[k8s_cluster]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[kubernetes_io_arch]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[kubernetes_io_hostname]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[kubernetes_io_os]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[name]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[namespace]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[node_hw]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[node_role]
+	csv write_field memory_bytes_csv $JSON(this_memory).[metric].[pod]
+	csv write_field memory_bytes_csv ${start_time}
+	csv write_field memory_bytes_csv ${end_time}
+	var counter = 0
+	foreach $JSON(this_memory).[value] as this_memory_value {
+		var counter = ${counter}+1
+		if (${counter} == 2) {
+			csv write_field memory_bytes_csv ${this_memory_value.VALUE}
+		}
+	}
+}
+
+print All information retrieved!
+#=================  End of Extracting ==================#
