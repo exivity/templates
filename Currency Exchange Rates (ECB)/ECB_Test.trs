@@ -1,0 +1,32 @@
+# Test Transformer using ECB Rates
+
+import "system/extracted/ecb/exchange_rates.csv" source ecb alias rates 
+
+where ([TIME_PERIOD] !~ /${dataYear}-${dataMonth}-${dataDay}/) {
+    delete rows
+}
+
+if (!@DSET_EMPTY(ecb.rates) ) {
+  
+create column quantity value 1
+
+finish
+
+  services {
+    # Service Definition
+    service_type = "automatic"      # service type manual / automatic
+    usages_col = KEY       # the column containing the friendly name of the service
+    description_col = TITLE   # column with service key value. Should be unique
+    category = "ECB Exchange Rates"         # column with category description
+    instance_col = TITLE_COMPL         # the chargable instance i.e. vm-id, username, etc
+    interval = "daily"            # the interval value
+    unit_label_col = UNIT          # the column containing the unit label
+    consumption_col = quantity      # the column containing the consumed quantity
+    model = "unprorated"            # for price: unprorated or prorated model
+    charge_model = "peak"           # for quantity: peak or average calculation
+    # Service Rate / Revision
+    # effective_date = "20220101"     # initial rate revision, leave empty for 
+    set_rate_using = OBS_VALUE           # column value with initial rate
+    set_cogs_using = OBS_VALUE           # column value with intiial costs
+  }
+}
