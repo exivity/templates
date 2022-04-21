@@ -1,8 +1,8 @@
 #################################################################
 # This USE script will download a CUR Report from an S3 bucket  #
 #                                                               #
-# This needs one parameter: YYYYMMDD							#
-#																#
+# This needs one parameter: YYYYMMDD				#
+#								#
 #################################################################
 
 if (${ARGC} == 0) {
