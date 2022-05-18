@@ -1,0 +1,165 @@
+# AzureNCE Transformer
+
+# Setup options
+option loglevel = INFO
+option embed = yes
+
+# Import onetime from dynamic source
+import "system/extracted/AzureNCE/Invoices/Billed/${dataYear}${dataMonth}_invoice_onetime.*.csv" source AzureNCE alias OneTime options {
+    pattern = yes
+}
+# Import marketplace from dynamic source
+import "system/extracted/AzureNCE/Invoices/Billed/${dataYear}${dataMonth}_invoice_marketplace.*.csv" source AzureNCE alias MarketPlace options {
+    pattern = yes
+    filter ([usageDate] == "${dataYear}-${dataMonth}-${dataDay}T00:00:00Z")
+}
+
+# Remove MarketPlace items from OneTime
+default dset AzureNCE.MarketPlace
+# Create target for to be removed OneTime items
+create column remove value yes
+# Revert to OneTime for correlation
+default dset AzureNCE.OneTime
+correlate remove using subscriptionId assuming AzureNCE.MarketPlace
+# Remove the unwanted items
+where ([remove] == yes) {
+    delete row
+} 
+
+# Transform OneTime
+default dset AzureNCE.OneTime
+
+# Remove unnecessary items regarding dates
+create column dateCorrect value no
+create column monthCycle
+split chargeStartDate using -
+rename column chargeStartDate_split1 to chargeStartYear
+rename column chargeStartDate_split2 to chargeStartMonth
+split chargeStartDate_split3 using T
+rename column chargeStartDate_split3_split1 to chargeStartDay
+if (${dataDay} == 1) {
+    var oldMonth = ${dataMonth}-1
+    where ([chargeStartMonth] == ${oldMonth}) {
+        set dateCorrect = yes
+        set monthCycle = "lateUsage"
+    } 
+}
+where (([chargeStartMonth] == ${dataMonth}) && ([chargeStartDay] == ${dataDay})) {
+    set dateCorrect = yes
+}
+if (${dataDay} == ${dataMonthDays}) {
+    var nextMonth = ${dataMonth}+1
+        where ([chargeStartMonth] == ${nextMonth}) {
+        set dateCorrect = yes
+        set monthCycle = "earlyUsage"
+    } 
+}
+where ([dateCorrect] == no) {
+    delete row
+}
+
+if (!@DSET_EMPTY(AzureNCE.OneTime)) {
+    # Generic formatting
+    uppercase values in columns partnerId customerId subscriptionId reservationOrderId referenceId
+
+    # Rename columns that do not need any further processing for the result dataset
+    rename column billableQuantity to service_quantity
+    rename column unitPrice to service_rate
+    rename column unitType to service_unit
+
+    # Calculate columns to overwrite original
+    calculate column service_cogs as column subtotal / column service_quantity
+
+    # Create missing columns to assist in the completion of the dataset
+    create column service_charge_model value peak
+    create column service_interval value individually
+    create column service_source value MarketPlace
+    create column service_prefix value MicrosoftNCE
+
+    # Create columns based on existing data
+    create mergedcolumn service_id separator "-" from skuId productId
+    create mergedcolumn service_name separator "-" from skuName
+    create mergedColumn service_instance separator " " from skuName chargeType termAndBillingCycle
+    create mergedColumn service_category separator " " from service_prefix productName
+
+    # Simplify Microsoft Proration
+    create mergedColumn service_quantity_max separator "" from service_quantity
+    create mergedColumn service_quantity_min separator "" from service_quantity
+    aggregate notime customerId match subtotal sum taxTotal sum totalForCustomer sum reservationOrderId match referenceId match service_quantity_max max service_quantity_min min service_cogs max
+    where ([service_quantity_max] != [service_quantity_min]) {
+        calculate column service_quantity as column service_quantity_max - column service_quantity_min
+    }
+
+    # Determine reservations
+    where ([termAndBillingCycle] =~ /.*(Reservation).*/ ) {
+        set service_source = "Reservation"
+    }
+    # Fill empty SubscriptionDescription
+    where ([subscriptionDescription] == "") {
+        set subscriptionDescription as subscriptionId
+    }
+}
+
+# Transform MarketPlace
+default dset AzureNCE.MarketPlace
+# Generic formatting
+uppercase values in columns partnerId customerId subscriptionId meterId entitlementId
+# Rename columns that do not need any further processing for the result dataset
+rename column meterId to service_id
+rename column quantity to service_quantity
+rename column effectiveUnitPrice to service_cogs
+rename column unitPrice to service_rate
+rename column unitType to service_unit
+# Create missing columns to assist in the completion of the dataset
+create column service_charge_model value peak
+create column service_interval value individually
+create column service_source value AzurePlan
+create column service_prefix value MicrosoftNCE
+# Create columns based on existing data
+create mergedColumn service_category separator " " from service_prefix productName
+create mergedColumn service_name separator " " from meterCategory meterSubCategory meterName
+create mergedcolumn service_instance from resourceUri /.*\/(.*)$/
+# Overwrite subscription data with entitlement data
+set subscriptionId as entitlementId
+set subscriptionDescription as entitlementDescription
+
+# Append MarketPlace to OneTime
+append AzureNCE.MarketPlace to AzureNCE.OneTime
+if (!@DSET_EMPTY(AzureNCE.OneTime)) {
+    default dset AzureNCE.OneTime
+} else {
+    default dset AzureNCE.MarketPlace
+}
+
+# Cleanup
+delete columns except "Sell-to Customer No" "Contract No" service_id service_quantity service_cogs service_name service_instance service_unit service_category service_interval service_charge_model service_rate partnerId PartnerName customerId customerName customerDomainName subscriptionId subscriptionDescription service_source
+
+# Dataset is prepared for charging engine
+if (!@DSET_EMPTY(AzureNCE.OneTime)) {
+    rename dset AzureNCE.OneTime to AzureNCE.Result
+} else {
+    rename dset AzureNCE.MarketPlace to AzureNCE.Result
+}
+
+if (@DSET_EMPTY(AzureNCE.Result)) {
+    # DSET is empty
+    terminate
+}
+
+finish AzureNCE.Result
+
+# Setup service catalog mapping
+option services = update
+services {
+    service_type = automatic
+    usages_col = service_id
+    consumption_col = service_quantity
+    cogs_col = service_cogs
+    description_col = service_name
+    instance_col = service_instance
+    unit_label_col = service_unit
+    category_col = service_category
+    interval_col  = service_interval
+    charge_model_col  = service_charge_model
+    rate_col = service_rate
+}

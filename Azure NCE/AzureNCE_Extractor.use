@@ -1,0 +1,563 @@
+# AzureNCE Extractor.
+# Requires an Environment configured with the following variables:
+# microsoft_domain
+# application_id
+# application_secret
+# currency_code
+
+## Public variables
+# Set root directory for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var export_directory = "system/extracted/AzureNCE"
+# Set debugmode, this will increase disk usage (yes/no)
+public var debug_mode = "no"
+# Extract unbilled data for dataDate (yes/no)
+public var extract_unbilled = "yes"
+# Extract billed data for argument date (yes/no)
+public var extract_billed = "yes"
+
+## Setup debugmode
+if (${debug_mode} == yes) {
+    loglevel DEBUGX
+	print microsoft_domain: "${microsoft_domain}"
+	print application_id: "${application_id}"
+	print application_secret: "${application_secret}"
+	print currency_code: "${currency_code}"
+} else {
+    loglevel INFO
+}
+
+## Pre Extraction tests
+if (${debug_mode} == yes) {
+	print Running pre extraction checks
+}
+# Test for default environment
+if (("${microsoft_domain}" == "Default") && ("${application_id}" == "Default") && ("${application_secret}" == "Default")) {
+	print "Cannot run the Extractor in the default environment!"
+	terminate with error
+}
+# Test the date argument
+gosub check_dateformat(${ARG_1})
+
+## Pre Extraction Setup
+if (${debug_mode} == yes) {
+	print Running pre extraction setup
+}
+# Setup date data
+gosub format_date(${ARG_1})
+# Setup invoice offset
+gosub determine_offset(${year},${month})
+# Setup Partnerroot
+var partner_root = "https://api.partnercenter.microsoft.com"
+# Encode items for token
+uri encode-component application_id
+uri encode-component application_secret
+# Setup default paths
+var auth_json_file = "${export_directory}/DEBUG/Auth/${microsoft_domain}/${YEAR}${MONTH}${DAY}_Auth.json"
+var billing_onetime_export_file = "${export_directory}/Invoices/Billed/${year}${month}_invoice_onetime_${microsoft_domain}.csv"
+var billing_marketplace_export_file = "${export_directory}/Invoices/Billed/${year}${month}_invoice_marketplace_${microsoft_domain}.csv"
+var billing_final_file = "${export_directory}/Invoices/Billed/${year}${month}data.csv"
+var billing_json_filepath = "${export_directory}/DEBUG/Invoices/Billed/${microsoft_domain}"
+var unbilled_export_file = "${export_directory}/Invoices/Unbilled/${YEAR}${MONTH}_${microsoft_domain}.csv"
+var unbilled_json_filepath = "${export_directory}/DEBUG/Invoices/Unbilled/${microsoft_domain}"
+# Write debug data
+if (${debug_mode} == yes) {
+	print exportdir: ${export_directory}
+	print day: ${day}
+	print month: ${month}
+	print year: ${year}
+	print offset: ${offset}
+	print partner_root: ${partner_root}
+	print auth_json_file: ${auth_json_file}
+	print billing_onetime_export_file: ${billing_onetime_export_file}
+	print billing_marketplace_export_file: ${billing_marketplace_export_file}
+	print billing_json_filepath: ${billing_json_filepath}
+	print unbilled_export_file: ${unbilled_export_file}
+	print unbilled_json_filepath: ${unbilled_json_filepath}
+}
+
+## Extract data
+if (${extract_billed} == yes) {
+	# Create CSV Tracker
+	var billed_csv_created = no
+	# Get authtoken (Returns: ${access_token})
+	gosub get_authtoken (${microsoft_domain}, ${application_id}, ${application_secret}, ${auth_json_file})
+	# Get billed invoices
+	if (${debug_mode} == yes) {
+		print "Extracting billed invoices for ${microsoft_domain}"
+	}
+	# Extract invoice list
+	clear http_headers
+	set http_header "Accept: application/json"
+	set http_header "Authorization: Bearer ${access_token}"
+	if (${debug_mode} == yes) {
+		set http_savefile "${billing_json_filepath}/${year}${month}_invoices.json"
+	}
+	buffer invoices = http GET "${partner_root}/v1/invoices?size=1&offset=${offset}"
+	if (${HTTP_STATUS_CODE} != 200) {
+		gosub write_http_error (${HTTP_STATUS_CODE})
+	}
+	foreach $JSON{invoices}.[items] as this_invoice {
+		var invoice_start_date = $JSON(this_invoice).[billingPeriodStartDate]
+		var invoice_id = $JSON(this_invoice).[id]
+		foreach $JSON(this_invoice).[invoiceDetails] as this_invoice_detail {
+			if ("${invoice_start_date}" == "${year}-${month}-01T00:00:00Z") {
+				if (${billed_csv_created} != yes) {
+					# Create Billed CSV files
+					if (${debug_mode} == yes) {
+						print Creating billed CSV: ${billing_onetime_export_file}
+
+					}
+					csv "billed_onetime" = "${billing_onetime_export_file}"
+					csv add_headers "billed_onetime" partnerId customerId customerName customerDomainName customerCountry invoiceNumber 
+					csv add_headers "billed_onetime" mpnId resellerMpnId orderId orderDate productId skuId availabilityId productName 
+					csv add_headers "billed_onetime" skuName chargeType unitPrice effectiveUnitPrice unitType quantity subtotal taxTotal
+					csv add_headers "billed_onetime" totalForCustomer currency publisherName publisherId subscriptionDescription subscriptionId
+					csv add_headers "billed_onetime" chargeStartDate chargeEndDate termAndBillingCycle alternateId referenceId discountDetails
+					csv add_headers "billed_onetime" pricingCurrency pcToBCExchangeRate pcToBCExchangeRateDate billableQuantity meterDescription
+					csv add_headers "billed_onetime" billingFrequency reservationOrderId invoiceLineItemType billingProvider promotionId
+					csv fix_headers "billed_onetime"
+
+					csv "billed_marketplace" = "${billing_marketplace_export_file}"
+					csv add_headers "billed_marketplace" partnerId partnerName customerId customerName customerDomainName invoiceNumber productId 
+					csv add_headers "billed_marketplace" skuId availabilityId skuName productName publisherName publisherId subscriptionId 
+					csv add_headers "billed_marketplace" subscriptionDescription chargeStartDate chargeEndDate usageDate meterType meterCategory 
+					csv add_headers "billed_marketplace" meterId meterSubCategory meterName meterRegion unitOfMeasure resourceLocation consumedService 
+					csv add_headers "billed_marketplace" resourceGroup resourceUri serviceInfo1 serviceInfo2 customerCountry mpnId resellerMpnId 
+					csv add_headers "billed_marketplace" chargeType unitPrice quantity unitType billingPreTaxTotal billingCurrency pricingPreTaxTotal 
+					csv add_headers "billed_marketplace" pricingCurrency entitlementId entitlementDescription pcToBCExchangeRate pcToBCExchangeRateDate 
+					csv add_headers "billed_marketplace" effectiveUnitPrice rateOfPartnerEarnedCredit hasPartnerEarnedCredit creditType rateOfCredit 
+					csv add_headers "billed_marketplace" invoiceLineItemType billingProvider
+					csv fix_headers "billed_marketplace"
+
+					var billed_csv_created = yes
+				}
+				# Get authtoken (Returns: ${access_token})
+				gosub get_authtoken (${microsoft_domain}, ${application_id}, ${application_secret}, ${auth_json_file})
+				var invoice_provider = $JSON(this_invoice_detail).[billingProvider]
+				var invoice_address = $JSON(this_invoice_detail).[links].[self].[uri]
+				if ("${invoice_provider}" == "marketplace") {
+					print -------------------
+					print invoice_start_date: ${invoice_start_date}
+					print invoice_provider: ${invoice_provider}
+					print invoice_address: ${invoice_address}
+					loop this_invoice_detail_extraction {
+						print Getting invoice: ${invoice_provider}: ${invoice_address}
+						clear http_headers
+						set http_header "Accept: application/json"
+						set http_header "Authorization: Bearer ${access_token}"
+						if (${this_invoice_detail_extraction.COUNT} != 1) {
+							set http_header "MS-ContinuationToken: ${continuation_token}"
+						}
+						if (${debug_mode} == yes) {
+							set http_savefile "${billing_json_filepath}/invoiceNumber_${invoice_id}_${invoice_provider}_${this_invoice_detail_extraction.COUNT}.json"
+						}
+						buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+						if (${HTTP_STATUS_CODE} != 200) {
+							if (${HTTP_STATUS_CODE} == 401) {
+								if (${debug_mode} == yes) {
+									print "Reauthenticating to mitigate error 401"
+								}
+								# Get authtoken (Returns: ${access_token})
+								gosub get_authtoken (${microsoft_domain}, ${application_id}, ${application_secret}, ${auth_json_file})
+								# Retry extraction
+								clear http_headers
+								set http_header "Accept: application/json"
+								set http_header "Authorization: Bearer ${access_token}"
+								if (${this_invoice_detail_extraction.COUNT} != 1) {
+									set http_header "MS-ContinuationToken: ${continuation_token}"
+								}
+								if (${debug_mode} == yes) {
+									set http_savefile "${billing_json_filepath}/invoiceNumber_${invoice_id}_${invoice_provider}_${this_invoice_detail_extraction.COUNT}_Retry.json"
+								}
+								buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+							} else {
+								gosub write_http_error (${HTTP_STATUS_CODE})
+							}
+						}
+
+						var continuation_token = $JSON{billed_usage}.[continuationToken]
+						var invoice_address = $JSON{billed_usage}.[links].[next].[uri]
+						var total_count = $JSON{billed_usage}.[totalCount]
+
+						# Writing billed usage to CSV
+						foreach $JSON{billed_usage}.[items] as this_lineitem {
+							csv write_field billed_marketplace $JSON(this_lineitem).[partnerId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[partnerName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[customerId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[customerName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[customerDomainName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[invoiceNumber]
+							csv write_field billed_marketplace $JSON(this_lineitem).[productId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[skuId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[availabilityId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[skuName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[productName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[publisherName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[publisherId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[subscriptionId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[subscriptionDescription]
+							csv write_field billed_marketplace $JSON(this_lineitem).[chargeStartDate]
+							csv write_field billed_marketplace $JSON(this_lineitem).[chargeEndDate]
+							csv write_field billed_marketplace $JSON(this_lineitem).[usageDate]
+							csv write_field billed_marketplace $JSON(this_lineitem).[meterType]
+							csv write_field billed_marketplace $JSON(this_lineitem).[meterCategory]
+							csv write_field billed_marketplace $JSON(this_lineitem).[meterId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[meterSubCategory]
+							csv write_field billed_marketplace $JSON(this_lineitem).[meterName]
+							csv write_field billed_marketplace $JSON(this_lineitem).[meterRegion]
+							csv write_field billed_marketplace $JSON(this_lineitem).[unitOfMeasure]
+							csv write_field billed_marketplace $JSON(this_lineitem).[resourceLocation]
+							csv write_field billed_marketplace $JSON(this_lineitem).[consumedService]
+							csv write_field billed_marketplace $JSON(this_lineitem).[resourceGroup]
+							csv write_field billed_marketplace $JSON(this_lineitem).[resourceUri]
+							csv write_field billed_marketplace $JSON(this_lineitem).[serviceInfo1]
+							csv write_field billed_marketplace $JSON(this_lineitem).[serviceInfo2]
+							csv write_field billed_marketplace $JSON(this_lineitem).[customerCountry]
+							csv write_field billed_marketplace $JSON(this_lineitem).[mpnId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[resellerMpnId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[chargeType]
+							csv write_field billed_marketplace $JSON(this_lineitem).[unitPrice]
+							csv write_field billed_marketplace $JSON(this_lineitem).[quantity]
+							csv write_field billed_marketplace $JSON(this_lineitem).[unitType]
+							csv write_field billed_marketplace $JSON(this_lineitem).[billingPreTaxTotal]
+							csv write_field billed_marketplace $JSON(this_lineitem).[billingCurrency]
+							csv write_field billed_marketplace $JSON(this_lineitem).[pricingPreTaxTotal]
+							csv write_field billed_marketplace $JSON(this_lineitem).[pricingCurrency]
+							csv write_field billed_marketplace $JSON(this_lineitem).[entitlementId]
+							csv write_field billed_marketplace $JSON(this_lineitem).[entitlementDescription]
+							csv write_field billed_marketplace $JSON(this_lineitem).[pcToBCExchangeRate]
+							csv write_field billed_marketplace $JSON(this_lineitem).[pcToBCExchangeRateDate]
+							csv write_field billed_marketplace $JSON(this_lineitem).[effectiveUnitPrice]
+							csv write_field billed_marketplace $JSON(this_lineitem).[rateOfPartnerEarnedCredit]
+							csv write_field billed_marketplace $JSON(this_lineitem).[hasPartnerEarnedCredit]
+							csv write_field billed_marketplace $JSON(this_lineitem).[creditType]
+							csv write_field billed_marketplace $JSON(this_lineitem).[rateOfCredit]
+							csv write_field billed_marketplace $JSON(this_lineitem).[invoiceLineItemType]
+							csv write_field billed_marketplace $JSON(this_lineitem).[billingProvider]
+						}
+						
+						if ("${total_count}" != "2000") {
+							print "Done collecting billed invoice"
+							exit_loop
+						}
+					}
+				}
+				if ("${invoice_provider}" == "one_time") {
+					print -------------------
+					print invoice_start_date: ${invoice_start_date}
+					print invoice_provider: ${invoice_provider}
+					print invoice_address: ${invoice_address}
+					loop this_invoice_detail_extraction {
+						print Getting invoice: ${invoice_provider}: ${invoice_address}
+						clear http_headers
+						set http_header "Accept: application/json"
+						set http_header "Authorization: Bearer ${access_token}"
+						if (${this_invoice_detail_extraction.COUNT} != 1) {
+							set http_header "MS-ContinuationToken: ${continuation_token}"
+						}
+						if (${debug_mode} == yes) {
+							set http_savefile "${billing_json_filepath}/invoiceNumber_${invoice_id}_${invoice_provider}_${this_invoice_detail_extraction.COUNT}.json"
+						}
+						buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+						if (${HTTP_STATUS_CODE} != 200) {
+							gosub write_http_error (${HTTP_STATUS_CODE})
+						}
+						var continuation_token = $JSON{billed_usage}.[continuationToken]
+						var invoice_address = $JSON{billed_usage}.[links].[next].[uri]
+						var total_count = $JSON{billed_usage}.[totalCount]
+
+						# Writing billed usage to CSV
+						foreach $JSON{billed_usage}.[items] as this_lineitem {							
+							csv write_field billed_onetime $JSON(this_lineitem).[partnerId]
+							csv write_field billed_onetime $JSON(this_lineitem).[customerId]
+							csv write_field billed_onetime $JSON(this_lineitem).[customerName]
+							csv write_field billed_onetime $JSON(this_lineitem).[customerDomainName]
+							csv write_field billed_onetime $JSON(this_lineitem).[customerCountry]
+							csv write_field billed_onetime $JSON(this_lineitem).[invoiceNumber]
+							csv write_field billed_onetime $JSON(this_lineitem).[mpnId]
+							csv write_field billed_onetime $JSON(this_lineitem).[resellerMpnId]
+							csv write_field billed_onetime $JSON(this_lineitem).[orderId]
+							csv write_field billed_onetime $JSON(this_lineitem).[orderDate]
+							csv write_field billed_onetime $JSON(this_lineitem).[productId]
+							csv write_field billed_onetime $JSON(this_lineitem).[skuId]
+							csv write_field billed_onetime $JSON(this_lineitem).[availabilityId]
+							csv write_field billed_onetime $JSON(this_lineitem).[productName]
+							csv write_field billed_onetime $JSON(this_lineitem).[skuName]
+							csv write_field billed_onetime $JSON(this_lineitem).[chargeType]
+							csv write_field billed_onetime $JSON(this_lineitem).[unitPrice]
+							csv write_field billed_onetime $JSON(this_lineitem).[effectiveUnitPrice]
+							csv write_field billed_onetime $JSON(this_lineitem).[unitType]
+							csv write_field billed_onetime $JSON(this_lineitem).[quantity]
+							csv write_field billed_onetime $JSON(this_lineitem).[subtotal]
+							csv write_field billed_onetime $JSON(this_lineitem).[taxTotal]
+							csv write_field billed_onetime $JSON(this_lineitem).[totalForCustomer]
+							csv write_field billed_onetime $JSON(this_lineitem).[currency]
+							csv write_field billed_onetime $JSON(this_lineitem).[publisherName]
+							csv write_field billed_onetime $JSON(this_lineitem).[publisherId]
+							csv write_field billed_onetime $JSON(this_lineitem).[subscriptionDescription]
+							csv write_field billed_onetime $JSON(this_lineitem).[subscriptionId]
+							csv write_field billed_onetime $JSON(this_lineitem).[chargeStartDate]
+							csv write_field billed_onetime $JSON(this_lineitem).[chargeEndDate]
+							csv write_field billed_onetime $JSON(this_lineitem).[termAndBillingCycle]
+							csv write_field billed_onetime $JSON(this_lineitem).[alternateId]
+							csv write_field billed_onetime $JSON(this_lineitem).[referenceId]
+							csv write_field billed_onetime $JSON(this_lineitem).[discountDetails]
+							csv write_field billed_onetime $JSON(this_lineitem).[pricingCurrency]
+							csv write_field billed_onetime $JSON(this_lineitem).[pcToBCExchangeRate]
+							csv write_field billed_onetime $JSON(this_lineitem).[pcToBCExchangeRateDate]
+							csv write_field billed_onetime $JSON(this_lineitem).[billableQuantity]
+							csv write_field billed_onetime $JSON(this_lineitem).[meterDescription]
+							csv write_field billed_onetime $JSON(this_lineitem).[billingFrequency]
+							csv write_field billed_onetime $JSON(this_lineitem).[reservationOrderId]
+							csv write_field billed_onetime $JSON(this_lineitem).[invoiceLineItemType]
+							csv write_field billed_onetime $JSON(this_lineitem).[billingProvider]
+							csv write_field billed_onetime $JSON(this_lineitem).[promotionId]
+						}
+						if ("${total_count}" != "2000") {
+							print "Done collecting billed invoice"
+							exit_loop
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+if (${extract_unbilled} == yes) {
+	# Get unbilled usage invoice
+	if (${debug_mode} == yes) {
+		print "Extracting unbilled usage invoice for ${microsoft_domain}"
+	}
+	# Create Unbilled CSV
+	if (${extract_unbilled} == yes) {
+		if (${debug_mode} == yes) {
+			print Creating unbilled CSV: ${unbilled_export_file}
+		}
+		csv "unbilled" = "${unbilled_export_file}"
+		csv add_headers "unbilled" partnerId partnerName customerId customerName customerDomainName invoiceNumber productId 
+		csv add_headers "unbilled" skuId availabilityId skuName productName publisherName publisherId subscriptionId 
+		csv add_headers "unbilled" subscriptionDescription chargeStartDate chargeEndDate usageDate meterType meterCategory 
+		csv add_headers "unbilled" meterId meterSubCategory meterName meterRegion unitOfMeasure resourceLocation consumedService 
+		csv add_headers "unbilled" resourceGroup resourceUri serviceInfo1 serviceInfo2 customerCountry mpnId resellerMpnId 
+		csv add_headers "unbilled" chargeType unitPrice quantity unitType billingPreTaxTotal billingCurrency pricingPreTaxTotal 
+		csv add_headers "unbilled" pricingCurrency entitlementId entitlementDescription pcToBCExchangeRate pcToBCExchangeRateDate 
+		csv add_headers "unbilled" effectiveUnitPrice rateOfPartnerEarnedCredit hasPartnerEarnedCredit creditType rateOfCredit 
+		csv add_headers "unbilled" invoiceLineItemType billingProvider
+		csv fix_headers "unbilled"
+	}
+
+	# Get authtoken (Returns: ${access_token})
+	gosub get_authtoken (${microsoft_domain}, ${application_id}, ${application_secret}, ${auth_json_file})
+	# Start unbilled_loop
+	if (${debug_mode} == yes) {
+		print "Starting unbilled_loop"
+	}
+	loop unbilled_loop {
+		if (${debug_mode} == yes) {
+			print "unbilled_loop iteration: ${unbilled_loop.COUNT}"
+		}
+		clear http_headers
+		set http_header "Accept: application/json"
+		set http_header "Authorization: Bearer ${access_token}"
+		if (${debug_mode} == yes) {
+			set http_savefile "${unbilled_json_filepath}/${YEAR}${MONTH}${DAY}_${unbilled_loop.COUNT}_unbilled_usage_${unbilled_loop.COUNT}.json"
+		}
+		if (${unbilled_loop.COUNT} == 1) {
+			buffer unbilled_usage = http GET "${partner_root}/v1/invoices/unbilled/lineitems?provider=onetime&invoicelineitemtype=usagelineitems&currencycode=${currency_code}&period=current&size=2000"
+		} else {
+			set http_header "MS-ContinuationToken: ${continuation_token}"
+			buffer unbilled_usage = http GET "${partner_root}/v1/invoices/unbilled/lineitems?provider=onetime&invoicelineitemtype=usagelineitems&currencycode=${currency_code}&period=current&size=2000&seekOperation=Next"
+		}
+		if (${HTTP_STATUS_CODE} != 200) {
+			gosub write_http_error (${HTTP_STATUS_CODE})
+		}
+		var continuation_token = $JSON{unbilled_usage}.[continuationToken]
+		var total_count = $JSON{unbilled_usage}.[totalCount]
+		print continuation_token: ${continuation_token}
+		print total_count: ${total_count}
+		# Writing unbilled usage to CSV
+		foreach $JSON{unbilled_usage}.[items] as this_lineitem {
+			var meterSubCategory = $JSON(this_lineitem).[meterSubCategory]
+			var productName = $JSON(this_lineitem).[productName]
+			var meterName = $JSON(this_lineitem).[meterName]
+			var meterRegion = $JSON(this_lineitem).[meterRegion]
+			if (("${meterRegion}" == "EXIVITY_NOT_FOUND") || ("${meterRegion}" == "")) {
+				var meterRegion = ""
+			} else {
+				var meterRegion = " - ${meterRegion}"
+			}
+			var meterSubCategory = "${meterSubCategory}"
+			var productName = "${productName}"
+			var meterName = " - ${meterName}"
+			var skuName = "${meterSubCategory}${meterName}${meterRegion}"
+			var meterDescription = "${productName}${meterName}${meterRegion}"
+			
+			csv write_field unbilled $JSON(this_lineitem).[partnerId]
+			csv write_field unbilled $JSON(this_lineitem).[partnerName]
+			csv write_field unbilled $JSON(this_lineitem).[customerId]
+			csv write_field unbilled $JSON(this_lineitem).[customerName]
+			csv write_field unbilled $JSON(this_lineitem).[customerDomainName]
+			csv write_field unbilled $JSON(this_lineitem).[invoiceNumber]
+			csv write_field unbilled $JSON(this_lineitem).[productId]
+			csv write_field unbilled $JSON(this_lineitem).[skuId]
+			csv write_field unbilled $JSON(this_lineitem).[availabilityId]
+			csv write_field unbilled $JSON(this_lineitem).[skuName]
+			csv write_field unbilled $JSON(this_lineitem).[productName]
+			csv write_field unbilled $JSON(this_lineitem).[publisherName]
+			csv write_field unbilled $JSON(this_lineitem).[publisherId]
+			csv write_field unbilled $JSON(this_lineitem).[subscriptionId]
+			csv write_field unbilled $JSON(this_lineitem).[subscriptionDescription]
+			csv write_field unbilled $JSON(this_lineitem).[chargeStartDate]
+			csv write_field unbilled $JSON(this_lineitem).[chargeEndDate]
+			csv write_field unbilled $JSON(this_lineitem).[usageDate]
+			csv write_field unbilled $JSON(this_lineitem).[meterType]
+			csv write_field unbilled $JSON(this_lineitem).[meterCategory]
+			csv write_field unbilled $JSON(this_lineitem).[meterId]
+			csv write_field unbilled $JSON(this_lineitem).[meterSubCategory]
+			csv write_field unbilled $JSON(this_lineitem).[meterName]
+			csv write_field unbilled $JSON(this_lineitem).[meterRegion]
+			csv write_field unbilled $JSON(this_lineitem).[unitOfMeasure]
+			csv write_field unbilled $JSON(this_lineitem).[resourceLocation]
+			csv write_field unbilled $JSON(this_lineitem).[consumedService]
+			csv write_field unbilled $JSON(this_lineitem).[resourceGroup]
+			csv write_field unbilled $JSON(this_lineitem).[resourceUri]
+			csv write_field unbilled $JSON(this_lineitem).[serviceInfo1]
+			csv write_field unbilled $JSON(this_lineitem).[serviceInfo2]
+			csv write_field unbilled $JSON(this_lineitem).[customerCountry]
+			csv write_field unbilled $JSON(this_lineitem).[mpnId]
+			csv write_field unbilled $JSON(this_lineitem).[resellerMpnId]
+			csv write_field unbilled $JSON(this_lineitem).[chargeType]
+			csv write_field unbilled $JSON(this_lineitem).[unitPrice]
+			csv write_field unbilled $JSON(this_lineitem).[quantity]
+			csv write_field unbilled $JSON(this_lineitem).[unitType]
+			csv write_field unbilled $JSON(this_lineitem).[billingPreTaxTotal]
+			csv write_field unbilled $JSON(this_lineitem).[billingCurrency]
+			csv write_field unbilled $JSON(this_lineitem).[pricingPreTaxTotal]
+			csv write_field unbilled $JSON(this_lineitem).[pricingCurrency]
+			csv write_field unbilled $JSON(this_lineitem).[entitlementId]
+			csv write_field unbilled $JSON(this_lineitem).[entitlementDescription]
+			csv write_field unbilled $JSON(this_lineitem).[pcToBCExchangeRate]
+			csv write_field unbilled $JSON(this_lineitem).[pcToBCExchangeRateDate]
+			csv write_field unbilled $JSON(this_lineitem).[effectiveUnitPrice]
+			csv write_field unbilled $JSON(this_lineitem).[rateOfPartnerEarnedCredit]
+			csv write_field unbilled $JSON(this_lineitem).[hasPartnerEarnedCredit]
+			csv write_field unbilled $JSON(this_lineitem).[creditType]
+			csv write_field unbilled $JSON(this_lineitem).[rateOfCredit]
+			csv write_field unbilled $JSON(this_lineitem).[invoiceLineItemType]
+			csv write_field unbilled $JSON(this_lineitem).[billingProvider]
+		}
+
+		discard {unbilled_usage}
+
+		if ("${total_count}" != "2000") {
+			print "Done collecting unbilled invoice"
+			exit_loop
+		}
+	}
+}
+
+#===================  Subroutines ====================#
+subroutine get_previousmonth {
+  var a = (@DTADD(${SUBARG_1}, -1, MONTH)))
+  match b "^([0-9]{8})" ${a}
+  if (${b.STATUS} != MATCH) {
+    print Could not extract day from the supplied date (${a})
+    terminate with error
+  } else {
+    var previousmonth = ${b.RESULT}
+  }
+}
+
+subroutine format_date {
+    #### Extract the day, month and year fields from today ####
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        # print Could not extract day from the supplied date (${today})
+        terminate with error
+    } else {
+        var day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        # print Could not extract month from the supplied date (${today})
+        terminate with error
+    } else {
+        var month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        # print Could not extract year from the supplied date (${today})
+        terminate with error
+    } else {
+        var year = ${year.RESULT}
+    }
+}
+
+subroutine check_dateformat {
+	# Validate the date format is as expected in YYYYMMDD
+	match date "^(([0-9]{4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|3[0-1])))" ${SUBARG_1}
+	if (${date.STATUS} != MATCH) {
+		print Argument error: ${SUBARG_1} is not in YYYYMMDD format
+		terminate with error
+	}
+}
+
+subroutine determine_offset {
+	#Subroutine vars
+	#${SUBARG_1} = year
+	#${SUBARG_1} = month
+
+	# Define month offset to actual month
+	var basedate = (@CURDATE("%Y%m"))
+	var basedate = "${basedate}01"
+	var requestdate = ${SUBARG_1}${SUBARG_2}"01"
+
+	var offset = ((@DATEDIFF(${basedate}, ${requestdate}))/30.436875)
+	var offset = (@ROUND("${offset}",0))
+}
+
+
+subroutine get_authtoken {
+	#Subroutine vars
+	#${SUBARG_1} = MyDomain
+	#${SUBARG_2} = client_id
+	#${SUBARG_3} = secret
+	#${SUBARG_4} = auth_json_file
+	if (${debug_mode} == yes) {
+    	print "Getting auth Token"
+		print "Storing Debug_Data in ${SUBARG_4}"
+	}
+	clear http_headers
+  	set http_body data "grant_type=client_credentials&client_id=${SUBARG_2}&client_secret=${SUBARG_3}&resource=https%3A%2F%2Fgraph.windows.net"
+  	set http_header "Content-Type: application/x-www-form-urlencoded"
+	if (${debug_mode} == yes) {
+  		set http_savefile "${SUBARG_4}"
+  	}
+
+  	buffer token = http POST "https://login.windows.net/${SUBARG_1}/oauth2/token"
+  	if (${HTTP_STATUS_CODE} != 200) {
+  		gosub write_http_error (${HTTP_STATUS_CODE})
+  	}
+  
+  	# Create a variable called ${access_token} from the AD token in {token}
+  	var access_token = $JSON{token}.[access_token]
+  	discard {token}
+	uri encode-component access_token
+  	# Reset headers as we want to create new headers
+  	clear http_headers
+	if (${debug_mode} == yes) {
+		print "extracted access_token"
+	}
+}
+subroutine write_http_error {
+	#Subroutine vars
+	#${SUBARG_1} = HTTP_STATUS_CODE
+
+	print Got HTTP status ${SUBARG_1}, expected a status of 200
+	terminate with error
+}
+#================== End Subroutines ==================#
+
+print "|Exiting|| Azure extraction"
+print "------------------------------------------------"
