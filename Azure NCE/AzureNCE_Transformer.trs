@@ -132,7 +132,7 @@ if (!@DSET_EMPTY(AzureNCE.OneTime)) {
 }
 
 # Cleanup
-delete columns except "Sell-to Customer No" "Contract No" service_id service_quantity service_cogs service_name service_instance service_unit service_category service_interval service_charge_model service_rate partnerId PartnerName customerId customerName customerDomainName subscriptionId subscriptionDescription service_source
+delete columns except service_id service_quantity service_cogs service_name service_instance service_unit service_category service_interval service_charge_model service_rate partnerId PartnerName customerId customerName customerDomainName subscriptionId subscriptionDescription service_source
 
 # Dataset is prepared for charging engine
 if (!@DSET_EMPTY(AzureNCE.OneTime)) {
