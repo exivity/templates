@@ -17,7 +17,7 @@ default dset google.billing
 #delete column EXIVITY_AGGR_COUNT
 
 # Aggregating consumption (comment this part when applying tags)
-aggregate google.billing billing_account_id match service_id match service_description match sku_id match sku_description match cost match quantity match units match
+aggregate google.billing billing_account_id match service_id match service_description match sku_id match sku_description match units match cost sum quantity sum
 delete column EXIVITY_AGGR_COUNT
 
 # Normalise column headers
