@@ -162,7 +162,7 @@ where ( ["lineItem/AvailabilityZone"] == "" ) {
 create mergedcolumn service_name separator " " from lineItem/UsageType OS_Type lineItem/AvailabilityZone service_opp
 replace "HeavyUsage" in service_name with "Reserved"
 replace "Heavy Utilization" in service_name with "Reserved"
-create mergedcolumn service_key separator "-" from "Pricing Type" lineItem/ProductCode lineItem/UsageType OS_Type lineItem/Operation lineItem/AvailabilityZone cs_rate
+create mergedcolumn service_key separator "-" from "Pricing Type" lineItem/ProductCode lineItem/UsageType OS_Type lineItem/Operation lineItem/AvailabilityZone
 
 # If the usage record is for an AWS Marketplace resource, then modify the service_name and ProductName so that the descriptions match the display
 # formats used by non-Marketplace resources.
