@@ -1,11 +1,20 @@
 # AzureNCE Extractor.
-# Requires an Environment configured with the following variables:
+#
+# Optional: Set an Environment  with the following variables:
+# =============================================================
 # microsoft_domain
 # application_id
 # application_secret
 # currency_code
 
-## Public variables
+# Microsoft domain for this Azure NCE environment
+public var microsoft_domain = "YOURDOMAIN.onmicrosoft.com"
+# Azure NCE Partner Portal Application ID
+public var application_id = "UUID-AZURE-NCE-PORTAL"
+# Azure NCE Partner Portal Application Secret
+public var application_secret = "APP-SECRET"
+# Currency code for this environment 
+public var currency_code = "EUR"
 # Set root directory for writing extracted files, relative to %EXIVITY_HOME_PATH%
 public var export_directory = "system/extracted/AzureNCE"
 # Set debugmode, this will increase disk usage (yes/no)
@@ -20,7 +29,7 @@ if (${debug_mode} == yes) {
     loglevel DEBUGX
 	print microsoft_domain: "${microsoft_domain}"
 	print application_id: "${application_id}"
-	print application_secret: "${application_secret}"
+	#print application_secret: "${application_secret}"
 	print currency_code: "${currency_code}"
 } else {
     loglevel INFO
@@ -92,7 +101,16 @@ if (${extract_billed} == yes) {
 	if (${debug_mode} == yes) {
 		set http_savefile "${billing_json_filepath}/${year}${month}_invoices.json"
 	}
-	buffer invoices = http GET "${partner_root}/v1/invoices?size=1&offset=${offset}"
+	# try three times if HTTP 500  error
+	loop 3 {
+		buffer invoices = http GET "${partner_root}/v1/invoices?size=1&offset=${offset}"
+		if (${HTTP_STATUS_CODE} == 500) {
+			print "HTTP 500 error, will retry in 10 seconds..."
+			pause 10000
+		} else {
+			exit_loop
+		}
+	}
 	if (${HTTP_STATUS_CODE} != 200) {
 		gosub write_http_error (${HTTP_STATUS_CODE})
 	}
@@ -105,7 +123,6 @@ if (${extract_billed} == yes) {
 					# Create Billed CSV files
 					if (${debug_mode} == yes) {
 						print Creating billed CSV: ${billing_onetime_export_file}
-
 					}
 					csv "billed_onetime" = "${billing_onetime_export_file}"
 					csv add_headers "billed_onetime" partnerId customerId customerName customerDomainName customerCountry invoiceNumber 
@@ -151,7 +168,15 @@ if (${extract_billed} == yes) {
 						if (${debug_mode} == yes) {
 							set http_savefile "${billing_json_filepath}/invoiceNumber_${invoice_id}_${invoice_provider}_${this_invoice_detail_extraction.COUNT}.json"
 						}
-						buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+						loop 3 {
+							buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+							if (${HTTP_STATUS_CODE} == 500) {
+								print "HTTP 500 error, will retry in 10 seconds..."
+								pause 10000
+							} else {
+								exit_loop
+							}
+						}
 						if (${HTTP_STATUS_CODE} != 200) {
 							if (${HTTP_STATUS_CODE} == 401) {
 								if (${debug_mode} == yes) {
@@ -184,7 +209,10 @@ if (${extract_billed} == yes) {
 							csv write_field billed_marketplace $JSON(this_lineitem).[partnerId]
 							csv write_field billed_marketplace $JSON(this_lineitem).[partnerName]
 							csv write_field billed_marketplace $JSON(this_lineitem).[customerId]
-							csv write_field billed_marketplace $JSON(this_lineitem).[customerName]
+							var customer_name = $JSON(this_lineitem).[customerName]
+							escape quotes in customer_name
+							csv write_field billed_marketplace ${customer_name}
+							#csv write_field billed_marketplace $JSON(this_lineitem).[customerName]
 							csv write_field billed_marketplace $JSON(this_lineitem).[customerDomainName]
 							csv write_field billed_marketplace $JSON(this_lineitem).[invoiceNumber]
 							csv write_field billed_marketplace $JSON(this_lineitem).[productId]
@@ -209,7 +237,10 @@ if (${extract_billed} == yes) {
 							csv write_field billed_marketplace $JSON(this_lineitem).[resourceLocation]
 							csv write_field billed_marketplace $JSON(this_lineitem).[consumedService]
 							csv write_field billed_marketplace $JSON(this_lineitem).[resourceGroup]
-							csv write_field billed_marketplace $JSON(this_lineitem).[resourceUri]
+							var resource_uri = $JSON(this_lineitem).[resourceUri]
+							escape quotes in resource_uri using \
+							csv write_field billed_marketplace ${resource_uri}
+							#csv write_field billed_marketplace $JSON(this_lineitem).[resourceUri]
 							csv write_field billed_marketplace $JSON(this_lineitem).[serviceInfo1]
 							csv write_field billed_marketplace $JSON(this_lineitem).[serviceInfo2]
 							csv write_field billed_marketplace $JSON(this_lineitem).[customerCountry]
@@ -258,7 +289,16 @@ if (${extract_billed} == yes) {
 						if (${debug_mode} == yes) {
 							set http_savefile "${billing_json_filepath}/invoiceNumber_${invoice_id}_${invoice_provider}_${this_invoice_detail_extraction.COUNT}.json"
 						}
-						buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+						# try three times if HTTP 500  error
+						loop 3 {
+							buffer billed_usage = http GET "${partner_root}/v1${invoice_address}"
+							if (${HTTP_STATUS_CODE} == 500) {
+								print "HTTP 500 error, will retry in 10 seconds..."
+								pause 10000
+							} else {
+								exit_loop
+							}
+						}
 						if (${HTTP_STATUS_CODE} != 200) {
 							gosub write_http_error (${HTTP_STATUS_CODE})
 						}
@@ -270,7 +310,10 @@ if (${extract_billed} == yes) {
 						foreach $JSON{billed_usage}.[items] as this_lineitem {							
 							csv write_field billed_onetime $JSON(this_lineitem).[partnerId]
 							csv write_field billed_onetime $JSON(this_lineitem).[customerId]
-							csv write_field billed_onetime $JSON(this_lineitem).[customerName]
+							var customer_name = $JSON(this_lineitem).[customerName]
+							escape quotes in customer_name
+							csv write_field billed_onetime ${customer_name}
+							#csv write_field billed_onetime $JSON(this_lineitem).[customerName]
 							csv write_field billed_onetime $JSON(this_lineitem).[customerDomainName]
 							csv write_field billed_onetime $JSON(this_lineitem).[customerCountry]
 							csv write_field billed_onetime $JSON(this_lineitem).[invoiceNumber]
@@ -396,7 +439,10 @@ if (${extract_unbilled} == yes) {
 			csv write_field unbilled $JSON(this_lineitem).[partnerId]
 			csv write_field unbilled $JSON(this_lineitem).[partnerName]
 			csv write_field unbilled $JSON(this_lineitem).[customerId]
-			csv write_field unbilled $JSON(this_lineitem).[customerName]
+			var customer_name = $JSON(this_lineitem).[customerName]
+			escape quotes in customer_name
+			csv write_field unbilled ${customer_name}
+			#csv write_field unbilled $JSON(this_lineitem).[customerName]		
 			csv write_field unbilled $JSON(this_lineitem).[customerDomainName]
 			csv write_field unbilled $JSON(this_lineitem).[invoiceNumber]
 			csv write_field unbilled $JSON(this_lineitem).[productId]
@@ -421,7 +467,10 @@ if (${extract_unbilled} == yes) {
 			csv write_field unbilled $JSON(this_lineitem).[resourceLocation]
 			csv write_field unbilled $JSON(this_lineitem).[consumedService]
 			csv write_field unbilled $JSON(this_lineitem).[resourceGroup]
-			csv write_field unbilled $JSON(this_lineitem).[resourceUri]
+			var resource_uri = $JSON(this_lineitem).[resourceUri]
+			escape quotes in resource_uri using \"
+			csv write_field unbilled ${resource_uri}
+			#csv write_field unbilled $JSON(this_lineitem).[resourceUri]
 			csv write_field unbilled $JSON(this_lineitem).[serviceInfo1]
 			csv write_field unbilled $JSON(this_lineitem).[serviceInfo2]
 			csv write_field unbilled $JSON(this_lineitem).[customerCountry]
