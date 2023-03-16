@@ -1,116 +1,77 @@
 #################################################################
 #
-# Example Extractor to obtain line items from the Exivity API  
-# This can be used for integration into external ERP systems
+# Example Extractor to obtain the following from the Exivity API:
+# - Line items (the data powering a report)
+# - Accounts
+# - Services
 #
-# ==============================================================
-#                                                           
-# This USE script will requires two parameters:
+# This USE script operates on two dates provided as parameters
+# in yyyyMMdd format, a 'from' date and a 'to' date. 
 #
-# - [fromDate] 
-# - [toDate]
+# If only a single parameter is provided then it will be used
+# as both the 'from' date and the 'to' date. 
 #
-# Both in YYYYMMDD format 
+# When retrieving the charges, the date range is rounded to the
+# nearest complete month.
+#   
+# This can be useful for integration into external ERP systems
+# as the extracted data can be processed further prior to export
+# by a custom Transformer script
+#
+# Not all fields in the services and accounts JSON are exported
+# to the CSV as some are not deemed useful. They can be easily
+# added however.
+#
+# Last modified: Eddy Deegan, 16th March 2023
 #                                                           
 #################################################################
 
-#====================== Validation ======================#
+# Validation and initialisation
+gosub initialise()
 
-# Check if we have two parameters (from and to date)
-if (${ARGC} != 2)
-{
-	print "This requires 2 argument, the first day of the invoice period, and the last day of the invoice periode, both in yyyyMMdd format"
-	terminate
-} else {
-	var from_date = ${ARG_1}
-	var to_date = ${ARG_2}
-}
-
-# Validate the date formats
-match date "^([0-9]{8})$" ${from_date}
-if (${date.STATUS} != MATCH) {
-	print Argument 1 error: ${from_date} is not in YYYYMMDD format
-	terminate
-}
-
-match date "^([0-9]{8})$" ${to_date}
-if (${date.STATUS} != MATCH) {
-	print Argument 2 error: ${to_date} is not in YYYYMMDD format
-	terminate
-}
-
-# Extract the day, month and year fields from the dates
-match day "^[0-9]{6}([0-9]{2})" ${from_date}
-if (${day.STATUS} != MATCH) {
-	print Could not extract day from the supplied date (${from_date})
-	terminate
-} else {
-	var day = ${day.RESULT}
-}
-
-match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${from_date}
-if (${day.STATUS} != MATCH) {
-	print Could not extract month from the supplied date (${from_date})
-	terminate
-} else {
-	var month = ${month.RESULT}
-}
-
-match year "^([0-9]{4})[0-9]{4}" ${from_date}
-if (${year.STATUS} != MATCH) {
-	print Could not extract year from the supplied date (${from_date})
-	terminate
-} else {
-	var year = ${year.RESULT}
-}
-
-
-
-#====================== Validation ======================#
-
+#==================== Configuration ====================#
+#
 # Hostname of the Exivity server
-public var exivity_host = "hostname.exivity.local"
+public var exivity_host = "solita.hosted.exivity.io"
 
-# Default port is 8002 for API (this is a different port as the web UI)
-public var api_port = "8002"
+# The port that the Exivity web service is listening on
+public var api_port = 443
 
-# API user is sysadmin, with default password public
-public var username = "admin"  # The username that has access to read the report
-public var password = "exivity" # The password that goes with above user name
+# Credentials
+public var username = "admin"  # Must have rights to access the report
+public encrypt var password = exivity # Set to the password for the above account
 
 # When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
-public var secure_ssl = "yes"
+public var secure_ssl = "no"
 
-# use report settings
-public var report_id = "1" # The id of the report definition 
-public var depth = "2" # The account depth of the cost report
+# Details of the report to run
+public var report_id = "19" # The id of the report definition 
+public var depth = "3" # The account depth that charges should be rolled up to
 
-# loglevel 0
+# Extracted data locations
 var JSON_dir = "system/extracted/exivity/json"
 var CSV_dir = "system/extracted/exivity"
 
-var authJSON = "${JSON_dir}/auth.json"
 var reportsJSON = "${JSON_dir}/reports.json"
 var servicesJSON = "${JSON_dir}/services.json"
 var accountsJSON = "${JSON_dir}/accounts.json"
 
-var export_file = "${CSV_dir}/${year}${month}_exivity_charges.csv"
-var services_file = "${CSV_dir}/${year}${month}_exivity_services.csv"
-var accounts_file = "${CSV_dir}/${year}${month}_exivity_accounts.csv"
-var invoice_date_file = "${CSV_dir}/${year}${month}_exivity_invoice_date.csv"
+# In the below locations, the year and month were derived from the 'fromDate' script parameter
+var charges_file = "${CSV_dir}/${from_year}${from_month}_exivity_charges.csv"
+var services_file = "${CSV_dir}/${from_year}${from_month}_exivity_services.csv"
+var accounts_file = "${CSV_dir}/${from_year}${from_month}_exivity_accounts.csv"
+var invoice_date_file = "${CSV_dir}/${from_year}${from_month}_exivity_invoice_date.csv"
 #
-#=================  End Configuration ==================#
-
-#/ Get an token from Exivity 
-print "Getting Exivity Charges ..."
+#================== End Configuration ===================#
 
 set http_secure ${secure_ssl}
 
-# Set up the HTTP request parameters
+# Authenticate
+print -n "Authenticating ..."
 set http_header "Accept: application/json"
 set http_header "Content-Type: application/x-www-form-urlencoded"
 set http_body data "username=${username}&password=${password}"
-set http_savefile "${authJSON}"
+
 buffer token = http POST "https://${exivity_host}:${api_port}/v1/auth/token?app="
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
@@ -119,20 +80,21 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print {token}
 	terminate with error
 }
-print "Succesfully authenticated!"
+print "done"
 
-# Create a variable called ${access_token} from the auth token in {token}
 var access_token = "$JSON{token}.[token]"
-print "access token is ${access_token}"
 discard {token}
 
-set http_savefile "${reportsJSON}"
-# set http_savefile "${json_filedir}\http_consumption_init-1k.json"
+# Get 
 clear http_headers
 set http_header "Accept: application/json"
 set http_header "Content-Type: application/x-www-form-urlencoded"
 set http_header "Authorization: Bearer ${access_token}"
-# Get the charges from Exivity
+
+# Get a list of reports in JSON format
+print -n "Downloading report definitions (JSON) ..."
+set http_savefile "${reportsJSON}"
+
 buffer reports = http GET "https://${exivity_host}:${api_port}/v1/reports"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
@@ -141,8 +103,15 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print {reports}
 	terminate with error
 }
-set http_savefile "${export_file}"
-buffer charges = http GET "https://${exivity_host}:${api_port}/v1/reports/${report_id}/run?start=${year}${month}01&end=${year}${month}31&timeline=month&depth=${depth}&include=account_name,service_description,servicecategory_name&format=csv&precision=highest&consolidated=1&progress=0"
+print "done"
+
+# Get the charges in CSV format
+get_last_day_of ${to_year}${to_month} as last_day
+print "Rounded date range to nearest month (${from_year}${from_month}01 - ${to_year}${to_month}${last_day})"
+print -n "Downloading charges for report ID ${report_id} (CSV) ..."
+set http_savefile "${charges_file}"
+
+buffer charges = http GET "https://${exivity_host}:${api_port}/v1/reports/${report_id}/run?start=${from_year}${from_month}01&end=${to_year}${to_month}${last_day}&timeline=month&depth=${depth}&include=account_name,service_description,servicecategory_name&format=csv&precision=highest&consolidated=1&progress=0"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
 	print The server response was:
@@ -150,8 +119,12 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print {charges}
 	terminate with error
 }
+print "done"
 
+# Get the services in JSON format
+print -n "Downloading services (JSON) ..."
 set http_savefile "${servicesJSON}"
+
 buffer services = http GET "https://${exivity_host}:${api_port}/v1/services"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
@@ -160,10 +133,11 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print {services}
 	terminate with error
 }
+print "done"
 
 #
-# Get the accounts
-set http_savefile "${accounts_file}"
+# Get the accounts 
+print -n "Retrieving accounts (JSON) into a buffer ..."
 buffer accounts = http GET "https://${exivity_host}:${api_port}/v1/dump/data?models=account&progress=0"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
@@ -172,9 +146,29 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print {accounts}
 	terminate with error
 }
+print "done"
+
+print -n "Parsing accounts and saving in CSV format ..."
+csv ACCOUNTS = "${accounts_file}"
+csv add_headers ACCOUNTS "id" "report_id" "name" "level" "parent_id" 
+csv add_headers ACCOUNTS "lvl1_key" "lvl2_key" "lvl3_key" "lvl4_key" "lvl5_key"
+csv fix_headers ACCOUNTS
+
+foreach $JSON{accounts}.[] as this_account {
+    if (${this_account.COUNT} > 2) {
+			csv write_fields ACCOUNTS $JSON(this_account).[id] $JSON(this_account).[report_id]
+			csv write_fields ACCOUNTS "$JSON(this_account).[name]" $JSON(this_account).[level]
+			csv write_fields ACCOUNTS $JSON(this_account).[parent_id] "$JSON(this_account).[lvl1_key]"
+			csv write_fields ACCOUNTS "$JSON(this_account).[lvl2_key]" "$JSON(this_account).[lvl3_key]"
+			csv write_fields ACCOUNTS "$JSON(this_account).[lvl4_key]" "$JSON(this_account).[lvl5_key]"
+	}
+}
+csv close ACCOUNTS
+print "done"
 
 # Get the services
-set http_savefile "${services_file}"
+# set http_savefile "${services_file}"
+print -n "Retrieving services (JSON) into a buffer ... "
 buffer services = http GET "https://${exivity_host}:${api_port}/v1/dump/data?models=service&progress=0"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
@@ -183,10 +177,94 @@ if (${HTTP_STATUS_CODE} != 200) {
 	print {services}
 	terminate with error
 }
+print "done"
+
+print -n "Parsing services and saving in CSV format ..."
+csv SVCS = "${services_file}"
+csv add_headers SVCS "id" "category_id" "key" "description" "unit_label" "type" "interval"
+csv fix_headers SVCS 
+
+foreach $JSON{services}.[] as this_svc {
+    if (${this_svc.COUNT} > 2) {
+			csv write_fields SVCS $JSON(this_svc).[id] $JSON(this_svc).[category_id]
+			csv write_fields SVCS "$JSON(this_svc).[key]" "$JSON(this_svc).[description]"
+			csv write_fields SVCS $JSON(this_svc).[unit_label] "$JSON(this_svc).[type]"
+			csv write_fields SVCS "$JSON(this_svc).[interval]"
+	}
+}
+csv close SVCS
+print "done"
 
 # Write the invoice period
+print -n "Creating invoice date CSV ..."
 csv "invoice_date" = "${invoice_date_file}"
 csv add_headers "invoice_date" from_date to_date
 csv fix_headers "invoice_date"
 csv write_field "invoice_date" ${from_date} ${to_date}
 csv close "invoice_date"
+print "done"
+print "Completed"
+terminate
+
+#
+# Subroutine to validate the supplied script arguments and
+# set up some required date-related variables based on them
+#
+subroutine initialise {
+
+	if (${ARGC} < 1 || ${ARGC} > 2) {
+		print "This requires 1 or 2 arguments in yyyyMMdd format:"
+		print "1 (required): The first day of the invoice period"
+		print "2 (optional): The last day of the invoice period"
+		terminate with error
+	} 
+	
+	if (${ARGC} == 1) {
+		var from_date = ${ARG_1}
+		var to_date = ${ARG_1}
+	}
+
+	if (${ARGC} == 2) {
+		var from_date = ${ARG_1}
+		var to_date = ${ARG_2}
+	}
+
+	if (${from_date} > ${to_date}) {
+		print "Invalid date range ('from' date is later than 'to' date)"
+		terminate with error
+	}
+
+	match date "^([0-9]{8})$" ${from_date}
+	if (${date.STATUS} != MATCH) {
+		print Error: The 'from' date argument (${from_date}) is not in YYYYMMDD format
+		terminate with error
+	}
+
+	if ("${from_date}" != "${to_date}") {
+		match date "^([0-9]{8})$" ${to_date}
+		if (${date.STATUS} != MATCH) {
+			print Error: The 'to' date argument (${to_date}) is not in YYYYMMDD format
+			terminate with error
+		}
+	}
+
+	# Extract the day, month and year fields from the start date
+	match day "^[0-9]{6}([0-9]{2})" ${from_date}
+	var from_day = ${day.RESULT}
+
+	match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${from_date}
+	var from_month = ${month.RESULT}
+
+	match year "^([0-9]{4})[0-9]{4}" ${from_date}
+	var from_year = ${year.RESULT}
+
+	# Extract the day, month and year fields from the end date
+	match day "^[0-9]{6}([0-9]{2})" ${to_date}
+	var to_day = ${day.RESULT}
+
+	match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${to_date}
+	var to_month = ${month.RESULT}
+
+	match year "^([0-9]{4})[0-9]{4}" ${to_date}
+	var to_year = ${year.RESULT}
+}
