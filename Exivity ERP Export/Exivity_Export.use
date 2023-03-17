@@ -32,7 +32,7 @@ gosub initialise()
 #==================== Configuration ====================#
 #
 # Hostname of the Exivity server
-public var exivity_host = "solita.hosted.exivity.io"
+public var exivity_host = "localhost"
 
 # The port that the Exivity web service is listening on
 public var api_port = 443
@@ -92,6 +92,7 @@ set http_header "Content-Type: application/x-www-form-urlencoded"
 set http_header "Authorization: Bearer ${access_token}"
 
 # Get a list of reports in JSON format
+# TO DO: Remove this if not needed, or render it as a CSV file if it is
 print -n "Downloading report definitions (JSON) ..."
 set http_savefile "${reportsJSON}"
 
@@ -156,11 +157,11 @@ csv fix_headers ACCOUNTS
 
 foreach $JSON{accounts}.[] as this_account {
     if (${this_account.COUNT} > 2) {
-			csv write_fields ACCOUNTS $JSON(this_account).[id] $JSON(this_account).[report_id]
-			csv write_fields ACCOUNTS "$JSON(this_account).[name]" $JSON(this_account).[level]
-			csv write_fields ACCOUNTS $JSON(this_account).[parent_id] "$JSON(this_account).[lvl1_key]"
-			csv write_fields ACCOUNTS "$JSON(this_account).[lvl2_key]" "$JSON(this_account).[lvl3_key]"
-			csv write_fields ACCOUNTS "$JSON(this_account).[lvl4_key]" "$JSON(this_account).[lvl5_key]"
+		csv write_fields ACCOUNTS $JSON(this_account).[id] $JSON(this_account).[report_id]
+		csv write_fields ACCOUNTS "$JSON(this_account).[name]" $JSON(this_account).[level]
+		csv write_fields ACCOUNTS $JSON(this_account).[parent_id] "$JSON(this_account).[lvl1_key]"
+		csv write_fields ACCOUNTS "$JSON(this_account).[lvl2_key]" "$JSON(this_account).[lvl3_key]"
+		csv write_fields ACCOUNTS "$JSON(this_account).[lvl4_key]" "$JSON(this_account).[lvl5_key]"
 	}
 }
 csv close ACCOUNTS
@@ -186,10 +187,10 @@ csv fix_headers SVCS
 
 foreach $JSON{services}.[] as this_svc {
     if (${this_svc.COUNT} > 2) {
-			csv write_fields SVCS $JSON(this_svc).[id] $JSON(this_svc).[category_id]
-			csv write_fields SVCS "$JSON(this_svc).[key]" "$JSON(this_svc).[description]"
-			csv write_fields SVCS $JSON(this_svc).[unit_label] "$JSON(this_svc).[type]"
-			csv write_fields SVCS "$JSON(this_svc).[interval]"
+		csv write_fields SVCS $JSON(this_svc).[id] $JSON(this_svc).[category_id]
+		csv write_fields SVCS "$JSON(this_svc).[key]" "$JSON(this_svc).[description]"
+		csv write_fields SVCS $JSON(this_svc).[unit_label] "$JSON(this_svc).[type]"
+		csv write_fields SVCS "$JSON(this_svc).[interval]"
 	}
 }
 csv close SVCS
