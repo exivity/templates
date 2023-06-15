@@ -3,13 +3,15 @@
 # Setup options
 option loglevel = INFO
 option embed = yes
-
 # Import onetime from dynamic source
 import "system/extracted/AzureNCE/Invoices/Billed/${dataYear}${dataMonth}_invoice_onetime.*.csv" source AzureNCE alias OneTime options {
+    escaped = yes
     pattern = yes
 }
+
 # Import marketplace from dynamic source
 import "system/extracted/AzureNCE/Invoices/Billed/${dataYear}${dataMonth}_invoice_marketplace.*.csv" source AzureNCE alias MarketPlace options {
+    escaped = yes
     pattern = yes
     filter ([usageDate] == "${dataYear}-${dataMonth}-${dataDay}T00:00:00Z")
 }
