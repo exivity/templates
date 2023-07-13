@@ -16,7 +16,7 @@
 #
 
 # The hostname of the ECB API end point
-public var API_host = "sdw-wsrest.ecb.europa.eu"
+public var API_host = "data-api.ecb.europa.eu"
 # Pick D (for Daily) or M (for Monthly) to get Daily or Monthly aggregates
 public var measure_frequency = "D" 
 # The first day for which you want to obtain exchange rates in yyyy-mm-dd format in case of Daily frequency. Use yyyy-mm in case of Monthly. 
