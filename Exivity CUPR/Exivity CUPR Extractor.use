@@ -1,0 +1,83 @@
+#################################################################
+#
+# Extractor to obtain CUPR count from the Exivity API  
+#
+# ==============================================================
+
+# Hostname of the Exivity server
+public var exivity_host = "you.exivity.hostname"
+
+public var username = "exivity_user"  # The username that has permission to read the CUPR endpoint
+public var password = "exivity_password" # The password that goes with above user name
+
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
+
+loglevel 0
+var JSON_dir = "system/extracted/exivity_cupr/json"
+var CSV_dir = "system/extracted/exivity_cupr"
+
+var authJSON = "${JSON_dir}/auth.json"
+var cuprJSON = "${JSON_dir}/cupr.json"
+
+var export_file = "${CSV_dir}/exivity_cupr_${exivity_host}.csv"
+#
+#=================  End Configuration ==================#
+
+#/ Get an token from Exivity 
+print "Getting Exivity Charges ..."
+
+set http_secure ${secure_ssl}
+
+# Set up the HTTP request parameters
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_body data "username=${username}&password=${password}"
+set http_savefile "${authJSON}"
+buffer token = http POST "https://${exivity_host}/v1/auth/token?app="
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {token} 
+	print {token}
+	terminate with error
+}
+print "Succesfully authenticated!"
+
+# Create a variable called ${access_token} from the auth token in {token}
+var access_token = "$JSON{token}.[token]"
+discard {token}
+
+set http_savefile "${cuprJSON}"
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_header "Authorization: Bearer ${access_token}"
+# Get the charges from Exivity
+buffer cupr_usage = http GET "https://${exivity_host}/v1/cuprs"
+if (${HTTP_STATUS_CODE} != 200) {
+	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+	print The server response was:
+	json format {reports} 
+	print {reports}
+	terminate with error
+}
+
+csv "cupr_usage_export" = ${export_file}
+csv add_headers "cupr_usage_export" exivity_host dset_id data_month cupr_quantity
+csv fix_headers "cupr_usage_export" 
+
+foreach $JSON{cupr_usage}.[data].[] as cupr_month {
+	var cupr_count = $JSON(cupr_month).[attributes].[value]
+	if ("${cupr_count}" > 0) {
+		print CUPR Reported:
+		print ===============
+		print $JSON(cupr_month).[id]
+		print $JSON(cupr_month).[attributes].[month]
+		print $JSON(cupr_month).[attributes].[value]
+		csv write_field cupr_usage_export ${exivity_host}
+		csv write_field cupr_usage_export $JSON(cupr_month).[id]
+		csv write_field cupr_usage_export $JSON(cupr_month).[attributes].[month]
+		csv write_field cupr_usage_export $JSON(cupr_month).[attributes].[value]
+	}
+}
