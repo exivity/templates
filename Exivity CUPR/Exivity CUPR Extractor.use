@@ -24,9 +24,6 @@ var export_file = "${CSV_dir}/exivity_cupr_${exivity_host}.csv"
 #
 #=================  End Configuration ==================#
 
-#/ Get an token from Exivity 
-print "Getting Exivity Charges ..."
-
 set http_secure ${secure_ssl}
 
 # Set up the HTTP request parameters
@@ -54,6 +51,8 @@ set http_header "Accept: application/json"
 set http_header "Content-Type: application/x-www-form-urlencoded"
 set http_header "Authorization: Bearer ${access_token}"
 # Get the charges from Exivity
+print "Getting Exivity CUPR ..."
+print ""
 buffer cupr_usage = http GET "https://${exivity_host}/v1/cuprs"
 if (${HTTP_STATUS_CODE} != 200) {
 	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
@@ -67,14 +66,23 @@ csv "cupr_usage_export" = ${export_file}
 csv add_headers "cupr_usage_export" exivity_host dset_id data_month cupr_quantity
 csv fix_headers "cupr_usage_export" 
 
+var next_dset = "none"
 foreach $JSON{cupr_usage}.[data].[] as cupr_month {
+	var dset_name = $JSON(cupr_month).[id]
+	match dset_basename "(.*)-[0-9]{6}$" ${dset_name}
+	var current_dset = ${dset_basename.RESULT}
+	var cupr_month = $JSON(cupr_month).[attributes].[month]
 	var cupr_count = $JSON(cupr_month).[attributes].[value]
+	if ( "${next_dset}" != "${current_dset}" ) {
+		print --------------------------------------------
+		print CUPR usage for dataset  ${current_dset}:
+		var next_dset = ${current_dset}
+	} 
 	if ("${cupr_count}" > 0) {
-		print CUPR Reported:
-		print ===============
-		print $JSON(cupr_month).[id]
-		print $JSON(cupr_month).[attributes].[month]
-		print $JSON(cupr_month).[attributes].[value]
+		print Month: ${cupr_month}|CUPR: ${cupr_count}
+		#print $JSON(cupr_month).[id]
+		#print $JSON(cupr_month).[attributes].[month]
+		#print $JSON(cupr_month).[attributes].[value]
 		csv write_field cupr_usage_export ${exivity_host}
 		csv write_field cupr_usage_export $JSON(cupr_month).[id]
 		csv write_field cupr_usage_export $JSON(cupr_month).[attributes].[month]
