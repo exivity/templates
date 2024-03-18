@@ -1,0 +1,39 @@
+# Veeam Transformer
+
+# Setup import directory (Same as export directory of the Veeam Extractor)
+var importdir = "system/extracted/VeeamBackup"
+
+# Import items
+import "${importdir}/${dataDate}_backups.csv" source veeam alias backups
+create column vmid
+set vmid = (@CONCAT("vm-", (@EXTRACT_BEFORE(@EXTRACT_AFTER([job_name], ".vm-"),D)))
+where ([vmid]=="vm-") {
+    set vmid as backup_name
+}
+# filepath not required
+delete column file_path
+rename column backup_name to instance
+set instance = (@CONCAT([vmid], "_backup" ))
+aggregate veeam.backups notime vmid match backup_size sum data_size sum
+delete column EXIVITY_AGGR_COUNT
+create column service_key value storage_gb_backup
+create column quantity
+set quantity = (@ROUND([backup_size]/1024/1024/1024,0))
+delete columns backup_id backup_name job_name backup_size data_size
+
+where ([quantity]>0) {
+    copy rows to veeam.license
+} 
+default dset veeam.license
+delete columns except vmid
+aggregate veeam.license notime vmid match
+create column service_key value "veeam_server_license"
+create column quantity value 1
+delete column EXIVITY_AGGR_COUNT
+create column instance
+set instance as vmid
+append veeam.license to veeam.backups
+
+default dset veeam.backups
+
+export veeam.backups as "veeam/${dataDate}_backups.csv"
