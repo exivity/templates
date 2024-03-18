@@ -1,0 +1,237 @@
+#======================== Configuration ========================#
+#
+# This the Azure Cost Details Report data Extractor template.
+#
+# It assist in generating billing and charge back reporting
+# for various Azure customers. It works with for Azure EA 
+# and standard Azure Pay-as-you-Go customers. Other users
+# may also use this Extractor, as long as their usage is
+# accessable through the Azure Cost Management interface. 
+# for more information about htis end point, consult: 
+#
+# - https://learn.microsoft.com/en-us/rest/api/cost-management/generate-cost-details-report/create-operation?view=rest-cost-management-2023-11-01&tabs=HTTP
+#
+# depending on the type of Azure contract, you will need to
+# provide one ore more of the following items.
+#
+
+# Azure EA App client ID
+public var client_id = "<enterprise-app-client-guid>"
+# Azure EA App client secret
+public var client_secret = "<enterprise-app-client-secret>"
+# Azure Tenant ID under Client
+public var tenant_id = "<enterprise-app-tenant-guid>"
+# Azure Subscription (only required when pulling specific subscription costs)
+public var subscription_id = "<optional-subscription-guid>"
+# Azure EA enrollment ID 
+public var enrollment = "<ea-enrollmnent-id>"
+# Azure EA billing account ID (optional)
+public var billing_account = "<billing-account-id"
+# Resource endpoint
+public var resource = "https://management.azure.com"
+# authentication endpoint - replace tenant_id with common for generic use cases
+public var auth_endpoint = "https://login.microsoftonline.com/${tenant_id}/oauth2/v2.0/token"  # For auth to specific tenant
+# public var auth_endpoint = "https://login.microsoftonline.com/common/oauth2/authorize"   # For generic Auth
+
+# specify enrollment, billing_account or subscription
+public var request_type = "subscription"
+# The type of the detailed report: ActualCost or AmortizedCost
+public var metric_type = "ActualCost" 
+# set loglevel to INFO/DEBUGX for troubleshootin
+public var loglevel = "INFO"
+
+# file locations
+var exportdir = "system/extracted/AzureEA"
+var json_filedir = "${exportdir}"
+loglevel ${loglevel}
+
+# check input dates
+gosub check_dateargument()
+# date setting depends on invokation sync/async
+var input_start_date = ${ARG_1}
+var input_to_date = ${ARG_2}
+
+# date formatting
+gosub format_start_date(${input_start_date})
+gosub format_to_date(${input_to_date})
+var start_date = (@CONCAT(${start_year},"-",${start_month},"-",${start_day}))
+var end_date = (@CONCAT(${to_year},"-",${to_month},"-",${to_day}))
+var billingPeriod = (@CONCAT(${start_year},${start_month}))
+
+# generateDetailedCostReport request
+gosub authenticate()
+clear http_headers
+set http_savefile "${json_filedir}/request_report_savefile.json"
+set http_header "Accept: application/json"
+set http_header "Authorization: Bearer ${access_token}"
+print "Succesfully authenticated, generating cost report request..."
+
+# will execute an enrollment based request if request_type is set accoringly 
+if (${request_type}=="enrollment") {
+	print "Following Enrollment path"
+	set http_body data "{\"metric\":\"${metric_type}\",\"timePeriod\":{\"start\":\"${start_date}\",\"end\":\"${end_date}\"}}"
+	buffer request_enrollment = http POST "https://management.azure.com/subscriptions/${subscription_id}/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2023-11-01"
+	gosub validate_response({request_enrollment})
+	gosub polling()
+}
+# will execute an billing_account based request if request_type is set accordingly 
+if (${request_type}=="billing_account") {
+	# billing account based
+	set http_body data "{\"metric\":\"${metric_type}\",\"billingPeriod\":\"${billingPeriod}\"}"
+	buffer request_billing_account = http POST "https://management.azure.com/providers/Microsoft.Billing/billingAccounts/${billing_account}/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2023-11-01"
+	gosub validate_response({request_billing_account})
+	gosub polling()
+}
+# will execute a subscription based request
+if (${request_type}=="subscription") {
+	print Executing subscription based cost report ...
+	var csv_suffix = "${subscription_id}_${start_date}_${end_date}"
+	set http_body data "{\"metric\":\"${metric_type}\",\"timePeriod\":{\"start\":\"${start_date}\",\"end\":\"${end_date}\"}}"
+	buffer request_subscription = http POST "https://management.azure.com/subscriptions/${subscription_id}/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2023-11-01"
+	gosub validate_response({request_subscription})
+	gosub polling()
+}
+# if none of the above, terminate with error
+if ( (${request_type}!="enrollment") && (${request_type}!="billing_account") && (${request_type}!="subscription") ) {
+	print ERROR - invalid request_type: should be set to either "enrollment" or "billing_account"
+	terminate with error
+}
+
+
+#
+# subroutines
+#
+
+# response validator
+subroutine validate_response {
+    if (${HTTP_STATUS_CODE} !~ /200|202/) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format ${SUBARG_1}
+        print ${SUBARG_1}
+        terminate with error
+    }
+}
+
+# authenticate
+subroutine authenticate {
+	print "Getting Token..."
+	clear http_headers
+	uri encode-component client_id
+	uri encode-component client_secret
+	# Gets token does req gets 202 but empty buffer Next step troubleshoot w/ Azure admin
+	set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${client_secret}&scope=${resource}/.default"
+	set http_header "Content-Type: application/x-www-form-urlencoded"
+	set http_savefile "${json_filedir}/http_savefile_auth.json"
+	buffer token = http POST "${auth_endpoint}"
+	gosub validate_response({token})
+	var access_token = "$JSON{token}.[access_token]"
+	uri encode-component access_token
+}
+
+# polling logic
+subroutine polling {
+	if (${HTTP_STATUS_CODE}=="202") {
+		http get_header Location as poll_location	
+		http get_header Retry-After as poll_wait
+	}
+	loop polling_loop {
+		print "waiting for ${poll_wait} ..."
+		pause ${poll_wait}
+		print "calling endpoint "${poll_location}" ..."
+		buffer report_ready = http get ${poll_location}
+		if (${HTTP_STATUS_CODE}=="200") {
+			exit_loop
+		}
+	}
+	print "received http 200, report is ready for download from blob storage..."
+
+	clear http_headers
+	var csv_count = 0
+	foreach $JSON{report_ready}.[manifest].[blobs] as this_blob {
+		var csv_count =+ 1
+		var blob_url = $JSON(this_blob).[blobLink]
+		print "downloading report from ${blob_url} ..."
+		set http_savefile "${exportdir}/blob/azure_${csv_suffix}_${csv_count}.csv"
+		buffer csv_report = http get ${blob_url}
+	}
+	print "finished downloading all report files."
+}
+
+# dat formatting
+subroutine format_start_date {
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var start_day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var start_month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var start_year = ${year.RESULT}
+    }
+}
+subroutine format_to_date {
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var to_day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var to_month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var to_year = ${year.RESULT}
+    }
+}
+
+# data check subroutines
+subroutine check_dateargument {
+	# Validate that amount of input arguments is as expected
+	if (${ARGC} != 2) {
+		print "This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format"
+		terminate with error
+	} else {
+		var today = ${ARG_1}
+		var tomorrow = ${ARG_2}
+	}
+	#
+	# Validate that to date is not before from date
+	if (${ARG_1} > ${ARG_2}) {
+	print "TO date cannot be a date that lies before FROM date"
+	terminate with error
+	}
+	# Validate that to date is not the same as from date
+	if (${ARG_1} == ${ARG_2}) {
+	print "TO date cannot be the same as FROM date"
+	terminate with error
+	}
+	#
+	# Check if dates are in correct format
+	gosub check_dateformat(${today})
+	gosub check_dateformat(${tomorrow})
+}
+
+subroutine check_dateformat {
+	# Validate the date format is as expected in YYYYMMDD
+	match date "^(([0-9]{4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|3[0-1])))" ${SUBARG_1}
+	if (${date.STATUS} != MATCH) {
+		print Argument error: ${SUBARG_1} is not in YYYYMMDD format
+		terminate with error
+	}
+}

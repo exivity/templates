@@ -1,0 +1,174 @@
+# Extractor for Veeam Cloud Connect Backup usage data
+
+# Username used to access Veeam API
+public var username = "user"
+# Password used to access Veeam API
+public var var password = "pass"
+# Base URL for Veeam API access, excluding trailing slash
+public var base_url = "https://hostname.veeam.local:9398/api"
+# Set root directory for writing extracted files, relative to %EXIVITY_HOME_PATH%
+public var extract_directory = "system/extracted/VeeamBackup"
+# Set debugmode, this will increase disk usage (yes/no)
+public var debug_mode = "no"
+
+# Set debug export directory
+var debug_directory = "${extract_directory}/debug"
+set http_secure no
+gosub check_dateargument ()
+gosub check_dateformat (${ARG_1})
+gosub format_date (${ARG_1})
+
+#############################################################################################################################################
+# Create session
+#############################################################################################################################################
+
+# The API is session based and we initiate a session by POSTing our credentials to the sessionMngr endpoint
+# After the session is created we simply use the same basic authentication for every request
+print "* Creating session"
+# Create base64 encoded user and password
+var base64_encoded_auth_data = "${username}:${password}"
+encode base64 base64_encoded_auth_data
+
+clear http_headers
+set http_header "Content-Type: application/json"
+set http_header "Accept: application/json"
+set http_header "Authorization: Basic ${base64_encoded_auth_data}"
+
+# Create complete request URL
+var query_parameters = "v=latest"
+var api_endpoint = "sessionMngr"
+var query_url = "${base_url}/${api_endpoint}/?${query_parameters}" 
+
+if (${debug_mode} == yes) {
+    print "~ URL: ${query_url}"
+    print "~ Authentication: ${base64_encoded_auth_data}"
+    # Write reply to file
+    var json_debug_file = "${debug_directory}/session.json"
+    set http_savefile "${json_debug_file}"
+    print "~ Writing JSON response to ${json_debug_file}"
+}
+
+buffer session = http POST ${query_url}
+# NOTE! This endpoint returns 201 as a sucess!
+if (${HTTP_STATUS_CODE} != 201) {
+    gosub write_http_error (${HTTP_STATUS_CODE})
+}
+print "* Session created"
+
+#############################################################################################################################################
+# Extract all tenants
+#############################################################################################################################################
+print "< Extracting backups"
+# Create complete request URL
+var query_parameters = ""
+var api_endpoint = "backups"
+var query_url = "${base_url}/${api_endpoint}" 
+
+if (${debug_mode} == yes) {
+    print "~ URL: ${query_url}"
+    # Write reply to file
+    var json_debug_file = "${debug_directory}/backups.json"
+    print "~ Writing JSON response to ${json_debug_file}"
+    set http_savefile "${json_debug_file}"
+}
+buffer backups = http GET ${query_url}
+if (${HTTP_STATUS_CODE} != 200) {
+    gosub write_http_error (${HTTP_STATUS_CODE})
+    json format {backups}
+    print {backups}
+}
+
+#############################################################################################################################################
+# Extract usage for each tenant
+#############################################################################################################################################
+print "< Extracting backup jobs"
+var extract_file_name = "${extract_directory}/${year}${month}${day}_backups.csv"
+csv usage = ${extract_file_name}
+
+# We "normalize" the header names to use all lower caps and underscore
+csv add_headers usage backup_id backup_name job_name file_path backup_size data_size
+csv fix_headers usage
+
+foreach $JSON{backups}.[Refs] as backup {
+    # The UID attribute contains the tenant ID (a UUID) so we extract that
+    var backup_id = "$JSON(backup).[UID]"
+    var backup_name = "$JSON(backup).[Name]"
+    var query_parameters = "?type=BackupFile&format=Entities&filter=BackupUid=="${backup_id}";FileType==vbk"
+    var api_endpoint = "query"
+    var query_url = "${base_url}/${api_endpoint}${query_parameters}"
+    # ?${query_parameters}
+
+    if (${debug_mode} == yes) {
+        print "~ URL: ${query_url}"
+        # Write reply to file
+        var json_debug_file = "${debug_directory}/tenant_resources.json"
+        print "~ Writing JSON response to ${json_debug_file}"
+        set http_savefile "${json_debug_file}"
+    }
+    buffer tenant_resources = http GET ${query_url}
+    if (${HTTP_STATUS_CODE} != 200) {
+        gosub write_http_error (${HTTP_STATUS_CODE})
+    }
+    foreach $JSON{tenant_resources}.[Entities].[BackupFiles].[BackupFiles] as cloud_tenant_resource {
+        var name = "$JSON(cloud_tenant_resource).[Name]"
+        var file_path = "$JSON(cloud_tenant_resource).[FilePath]"
+        var backup_size = "$JSON(cloud_tenant_resource).[BackupSize]"
+        var data_size = "$JSON(cloud_tenant_resource).[DataSize]"
+        csv write_field usage ${backup_id}
+        csv write_field usage ${backup_name}
+        csv write_field usage ${name}
+        csv write_field usage ${file_path}
+        csv write_field usage ${backup_size}
+        csv write_field usage ${data_size}
+    }
+}
+print "> Writing data to CSV file ${extract_file_name}"
+csv close usage
+print "¤ Done!"
+
+#### SUBROUTINES ###
+
+subroutine write_http_error {
+	print "! Got HTTP status ${SUBARG_1}, expected a status of 200"
+	terminate with error
+}
+
+subroutine check_dateargument {
+    # Validate that amount of input arguments is as expected
+    if (${ARGC} < 1) {
+        print "! This extractor requires 1 argument; the date for when to collect data, in YYYYMMDD format."
+        terminate with error
+    }
+}
+
+subroutine check_dateformat {
+    match date "^(([0-9]{4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|3[0-1])))" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print "! Argument error: ${SUBARG_1} is not in YYYYMMDD format"
+        terminate with error
+    }
+}
+
+subroutine format_date {
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        print "! Argument error: ${SUBARG_1} is not in YYYYMMDD format"
+        terminate with error
+    } else {
+        var day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        print "! Argument error: ${SUBARG_1} is not in YYYYMMDD format"
+        terminate with error
+    } else {
+        var month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        print "! Argument error: ${SUBARG_1} is not in YYYYMMDD format"
+        terminate with error
+    } else {
+        var year = ${year.RESULT}
+    }
+}
