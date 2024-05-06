@@ -1,0 +1,4 @@
+# Converts Azure Cost Management blob into processable CSV
+# This will needs to be executed after each blob extraction
+option loglevel = INFO
+preprocess "system/extracted/AzureEA/blob/azure_${dataYear}${dataMonth}_1.csv" as "system/extracted/AzureEA/blob/azure_${dataYear}${dataMonth}_out.csv"

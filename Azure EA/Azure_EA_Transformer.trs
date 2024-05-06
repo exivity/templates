@@ -1,0 +1,81 @@
+# Set run time options
+option loglevel = INFO
+option overwrite = NO
+#option embed = yes
+# Make sure to point this to the directory where the Extractor or Converter writes its files to
+import "system/extracted/AzureEA/blob/azure_${dataYear}${dataMonth}_out.csv" source azure alias ea  options {
+  escaped = yes
+  filter = ([Date] =~ /${dataMonth}.${dataDay}.${dataYear}.*/)
+}
+
+rename column ResourceName to instance
+#create mergedcolumn instance from "ResourceId" /^.*\/(.*)$/
+#lowercase values in column "instance"
+
+# ==================== Get Tags ==================== #
+# The following RegEx template can be used to 
+# obtain any named Tag from the Azure EA usage data.
+# ================================================== #
+#create mergedcolumn BusinessUnit from Tags /.*"BusinessUnit": "([^"]+)".*/
+#create mergedcolumn CostCenter from Tags /.*"CostCenter": "([^"]+)".*/
+#create mergedcolumn environment from "Tags" /.*""environment"": ""([^"]+)"".*/
+#delete column Tags
+#================================================== #
+# Set values where empty
+set "instance" to "Not Applicable"
+#set "BusinessUnit" to "Not Assigned"
+#set "Cost Center" to "Not Assigned"
+#set "environment" to "Not Assigned"
+create column interval value "individually"
+rename column ProductName to service
+rename column MeterCategory to category
+option overwrite = yes
+
+# Group Marketplace into one Category
+where ([PublisherType]=="Marketplace") {
+  set service = (@CONCAT([PublisherName] ," - ", [PlanName]))
+  set category to "Marketplace"
+} 
+option overwrite = no
+
+# create service keys
+create column service_key
+set service_key = (@CONCAT([service] ,[PartNumber], "_EA"))
+rename column Quantity to quantity
+create column unit
+set unit = (@CONCAT([UnitOfMeasure] ,"/", [ChargeType]," Hours"))
+replace "Unassigned/" in unit
+
+# cleanup, aggregate and calculate rate
+delete columns except InvoiceSectionName AccountName AccountOwnerId SubscriptionId SubscriptionName category instance service_key service unit quantity rate interval CostInBillingCurrency
+aggregate azure.ea notime default_function match quantity sum CostInBillingCurrency sum
+create column rate
+set rate = ([CostInBillingCurrency]/[quantity])
+create column cogs
+set cogs as rate
+delete columns CostInBillingCurrency EXIVITY_AGGR_COUNT
+
+# seperate reservations
+where ([unit] =~ /.*Purchase.*/) {
+  set category to Reservations
+} 
+
+# Example: apply standard uplift - uncomment if required
+# set rate = [rate]*1.05
+
+
+finish
+
+services {
+  effective_date = 20230101
+  service_type = automatic
+  usages_col =  service_key # service key column
+  description_col = service # service friendly name column
+  category_col = category # column with category value
+  instance_col = instance # the unique instance i.e. vm-id, username, etc
+  rate_col = rate # the column containing the rate values
+  cogs_col = cogs # cogs coll
+  interval_col  = interval # the column containing the interval (i.e. individually)
+  unit_label_col = unit # the column containing the unit label
+  consumption_col = quantity # the column containing the consumed quantity
+}
