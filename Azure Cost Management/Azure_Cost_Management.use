@@ -33,6 +33,8 @@ public var request_type = "subscription"
 public var metric_type = "ActualCost" 
 # Whether to always convert to full month extractions (yes), or use partial month/daily extractions (no)
 public var force_monthly = "yes"
+# Use invoice based or timePeriod based extraction method (see Microsoft API docs)
+public var period_type = "invoice"
 # Resource endpoint
 public var resource = "https://management.azure.com"
 # authentication endpoint - replace tenant_id with common for generic use cases
