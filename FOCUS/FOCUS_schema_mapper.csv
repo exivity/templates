@@ -1,0 +1,22 @@
+﻿FOCUS_schema,Exivity_schema,Column_Description
+BillingAccountId,root_account_id,"A Billing Account ID is a provider-assigned identifier for a billing account. Billing accounts are commonly used for scenarios like grouping based on organizational constructs, invoice reconciliation and cost allocation strategies."
+BillingAccountName,root_account_name,"A Billing Account Name is a display name assigned to a billing account. Billing accounts are commonly used for scenarios like grouping based on organizational constructs, invoice reconciliation and cost allocation strategies."
+BillingCurrency,currency,Billing currency is an identifier that represents the currency that a charge for resources or services was billed in. Billing Currency is commonly used in scenarios where costs need to be grouped or aggregated. Might be combined with the ECB Currency Converter.
+BillingPeriodEnd,billing_month_end,Billing Period Start represents the exclusive end date and time of a billing period. 
+BillingPeriodStart,billing_month_start,Billing Period Start represents the inclusive start date and time of a billing period.
+ChargeCategory,charge_type,Charge Category represents the highest-level classification of a charge based on the nature of how it is billed. 
+ChargePeriodEnd,end_date,Charge Period End represents the exclusive end date and time of a charge period.
+ChargePeriodStart,start_date,Charge Period Start represents the inclusive start date and time within a charge period. F
+ContractedUnitPrice,rate,"The Contracted Unit Price represents the agreed-upon unit price for a single Pricing Unit of the associated SKU, inclusive of negotiated discounts, if present, while excluding negotiated commitment-based discounts or any other discounts."
+EffectiveCost,cogs,"Effective Cost represents the amortized cost of the charge after applying all reduced rates, discounts, and the applicable portion of relevant, prepaid purchases (one-time or recurring) that covered this charge. Must be dided by PricingQuantity using Transformer: set cogs = [cogs]  / [quantity]"
+PricingQuantity,quantity,"The Pricing Quantity represents the volume of a given SKU associated with a resource or service used or purchased, based on the Pricing Unit."
+PricingUnit,unit,"The Pricing Unit represents a provider-specified measurement unit for determining unit prices, indicating how the provider rates measured usage and purchase quantities after applying pricing rules like block pricing. "
+ProviderName,cloud_provider,A Provider is an entity that makes the resources or services available for purchase. 
+PublisherName,publisher,A Publisher is an entity that produces the resources or services that were purchased. 
+RegionName,region,Region Name is a provider-assigned display name for an isolated geographic area where a resource is provisioned or a service is provided.
+ResourceId,instance,"The ID of a specific cloud resource. For AWS, it might be a bucket name or instance ID. Equivalent for other clouds."
+ServiceCategory,category,The Service Category is the highest-level classification of a service based on the core function of the service
+ServiceName,service_name,"A service represents an offering that can be purchased from a provider (e.g., cloud virtual machine, SaaS database, professional services from a systems integrator). "
+SubAccountId,sub_account_id,"A Sub Account ID is a provider-assigned identifier assigned to a sub account. Sub Account ID is commonly used for scenarios like grouping based on organizational constructs, access management needs, and cost allocation strategies."
+SubAccountName,sub_account_name,"A Sub Account Name is a display name assigned to a sub account. Sub account Name is commonly used for scenarios like grouping based on organizational constructs, access management needs, and cost allocation strategies."
+Tags,TBD,"using ""create mergedcolumn"" Transformer statement: can create consume tags for hierarchical reporting (i.e. departments, BUs, cost centers)"
