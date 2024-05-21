@@ -1,0 +1,196 @@
+option loglevel = INFO
+#####################################################################
+#
+# Template Transformer for Pre-Processing AWS CUR data
+# -----------------------------------------------------
+#
+# The following Transformers are required for loading AWS data:
+# 1. AWS Pre-Processor Transformer
+# 2. AWS Consolidation Transformer
+#
+# This Transformer Template is pre-processing a single CUR data feed. 
+# In order to handle multiple payer accounts, additional changes
+# might be required. Reach out to support@exivity.com for more details.
+#
+#####################################################################aa
+#
+# AWS CUR data for any given month may contain fees with a UsageStartDate that is in
+# the next month. However these fees are reflected in the AWS invoice so we need to
+# include them in the Exivity report for this month.
+#
+# To do this, if we're processing the first of the month then we import ALL records 
+# with an ItemType of "Fee" regardless of their UsageStartDate so that they get charged
+# on the 1st of the month.
+#
+# The conditional logic below therefore applies a different import filter depending on
+# whether the dataDate is the first of the month or not.
+#
+if ("${dataDay}" == "01") {
+  import "system/extracted/aws/${dataYear}${dataMonth}/.*[0-9]*\.csv" source aws alias cur options {
+    pattern on
+    filter = ([lineItem\/UsageStartDate] =~ /${dataYear}-${dataMonth}-${dataDay}.*/ || ["lineItem\/LineItemType"] == "Fee") 
+  }
+  } else {
+  import "system/extracted/aws/${dataYear}${dataMonth}/.*[0-9]*\.csv" source aws alias cur options {
+    pattern on
+    filter = ([lineItem\/UsageStartDate] =~ /${dataYear}-${dataMonth}-${dataDay}.*/ ) 
+  }
+}
+
+# Simplify the column names we want to work with
+rename column ${/.*bill.PayerAccountId/} to PayerAccountId
+rename column ${/.*bill.BillingEntity/} to BillingSource
+rename column ${/.*lineItem.UsageAccountId/} to LinkedAccountId
+rename column ${/.*lineItem.LineItemType/} to LineItemType
+rename column ${/.*lineItem.UsageStartDate/} to UsageStartDate
+rename column ${/.*lineItem.UsageEndDate/} to UsageEndDate
+rename column ${/.*lineItem.UsageType/} to UsageType
+rename column ${/.*lineItem.Operation/} to Operation
+rename column ${/.*lineItem.AvailabilityZone/} to AvailabilityZone
+rename column ${/.*lineItem.ResourceId/} to ResourceId
+rename column ${/.*lineItem.UsageAmount/} to UsageQuantity
+rename column ${/.*lineItem.NormalizedUsageAmount/} to NormalizedUsageAmount
+rename column ${/.*lineItem.CurrencyCode/} to CurrencyCode
+rename column ${/.*lineItem.BlendedRate/} to BlendedRate
+rename column ${/.*lineItem.BlendedCost/} to BlendedCost
+rename column ${/.*lineItem.UnblendedRate/} to UnblendedRate
+rename column ${/.*lineItem.UnblendedCost/} to UnblendedCost
+rename column ${/.*lineItem.LineItemDescription/} to LineItemDescription
+rename column ${/.*product.ProductName/} to ProductName
+rename column ${/.*product.operatingSystem/} to box_type
+rename column ${/.*product.usagetype/} to usagetype2
+rename column ${/.*pricing.term/} to ReservedInstance
+rename column ${/.*pricing.unit/} to unit
+if (@COLUMN_EXISTS(discount\/PrivateRateDiscount)) {
+  rename column ${/.*discount.PrivateRateDiscount/} to PrivateRateDiscount
+} else {
+  create column PrivateRateDiscount value 0
+}
+if (@COLUMN_EXISTS(discount\/SppDiscount)) {
+  rename column ${/.*discount.SppDiscount/} to SppDiscount
+} else {
+  create column SppDiscount value 0
+}
+if (@COLUMN_EXISTS(discount\/EdpDiscount)) {
+  rename column ${/.*discount.EdpDiscount/} to EdpDiscount
+} else {
+  create column EdpDiscount value 0
+}
+
+delete columns except PayerAccountId BillingSource LinkedAccountId LineItemType LineItemDescription ReservedInstance ResourceId unit UsageType box_type BlendedRate BlendedCost UnblendedRate UnblendedCost Operation AvailabilityZone ProductName UsageQuantity PrivateRateDiscount SppDiscount EdpDiscount UsageStartDate
+
+# Ensure that fees with a usage start date sometime in 'next month' are included in reports
+# Convert the UsageStartDate to yyyyMMdd format
+timestamp StartDate using UsageStartDate template "YYYY.MM.DD" format yyyymmdd
+where (["StartDate"] > "${dataYear}${dataMonth}${dataMonthDays}") {
+  set StartDate to "${dataYear}${dataMonth}01"
+}
+
+# Drop any records that do not have a UsageStartDate of the 1st of the month because
+# based on the import filters combined with the logic above they must be Fees with a
+# charge date later in this month
+where (["StartDate"] != "${dataDate}") {
+  delete rows
+}
+delete column StartDate
+
+# Remove taxes 
+where (["LineItemType"] == "Tax") {
+  delete rows
+}
+
+# Convert Fees to usage
+where (["LineItemType"] == "Fee")  {
+    set UsageQuantity to 1
+    set BlendedRate as BlendedCost
+    # No need to set UnblendedRate as it gets set later as part of PRD discount calculations
+    set ResourceId to "Fee"
+}
+
+where (["LineItemType"] == "BundledDiscount") {
+    set UsageQuantity to 1
+    # No need to set UnblendedRate as it gets set later as part of PRD discount calculations
+    set BlendedRate as BlendedCost
+    set ResourceId to "BundledDiscount"
+}
+
+# Handle credits. There may be multiple credits for the same day but with different
+# rates, so we need to normalise the data for credits such that all instances have the
+# same rate. We do this by summing the UnblendedCost using aggregation, and charging it
+# as a single unit of consumption.
+where (["LineItemType"] == "Credit") {
+    move rows to aws.credits   
+}
+
+if (!@DSET_EMPTY(aws.credits)) {
+  default dset aws.credits
+  aggregate notime LinkedAccountId match UnblendedCost sum#
+  delete column EXIVITY_AGGR_COUNT
+  set LineItemDescription to "AWS Credit"
+  set UsageType to "Credit"
+  set LineItemDescription to "Credit"
+  set ProductName to "Credit"
+  set ResourceId to "Credit"
+  set UsageQuantity to 1
+  set BlendedRate as BlendedCost
+  default dset aws.cur
+  append aws.credits to aws.cur
+  delete dset aws.credits
+}
+
+# Set rate and COGS 
+create column rate
+create column adjusted_price
+set adjusted_price = ([UnblendedCost] + [PrivateRateDiscount]) # PRD is negative
+set rate = ([adjusted_price] / [UsageQuantity])
+delete column adjusted_price
+
+create column cogs        # Don't really need COGS but setting them
+set cogs as BlendedRate   # for diagnostic/contract purposes only
+
+# Identify between Reserved and On demand instances (blanks = Reserved)
+where ([ReservedInstance] == "") {
+  set ReservedInstance to "R"
+ }
+where ([ReservedInstance] == "OnDemand") {
+    set ReservedInstance to "OD"
+}
+
+# Set default values
+option overwrite = no
+set ResourceId to "Generic Consumption Record"
+where ([unit] == "") {
+  set unit to "Units"
+}
+
+# Create service key/name
+replace " " in ProductName
+create mergedcolumn service_key separator "|" from ReservedInstance UsageType box_type Operation AvailabilityZone ProductName
+create mergedcolumn service_name separator " " from ProductName ReservedInstance UsageType box_type Operation AvailabilityZone
+
+# Remove records without costs 
+where ([UnblendedCost] == 0 || [UsageQuantity] == 0) {
+  delete rows
+}
+
+option overwrite = yes
+where (["LineItemType"] == "Fee")  {
+    set UsageType to "Fees"
+    set ProductName to "Fees"
+    set unit to "Fees"
+}
+
+# Copy Marketplace consumption out to a separate DSET
+where (["BillingSource"] == "AWS Marketplace") {
+    set ProductName to "AWSMarketplace" # ProductName is service category (see AWS_consolidate.trs)
+}
+delete column BillingSource
+
+# Export enterprise support fees, if present
+where (["LineItemType"] == "Fee" && ["LineItemDescription"] == "AWS Support (Enterprise)") {
+  copy rows to aws.enterpriseFees
+}
+
+# Export the transformed data
+export aws.cur as aws/${dataYear}/${dataMonth}/${dataDate}_aws.csv
+terminate
