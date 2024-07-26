@@ -1,0 +1,408 @@
+#======================== Configuration ========================#
+#
+# This the Azure daily rated usage reconciliation v2 data Extractor template.
+#
+# It assist in generating billing and charge back reporting
+# for various Azure customers. It works with for Azure NCE 
+# and standard Azure Pay-as-you-Go customers. Other users
+# may also use this Extractor, as long as their usage is
+# accessable through the Azure Cost Management interface. 
+# for more information about htis end point, consult: 
+#
+# - https://learn.microsoft.com/en-us/partner-center/developer/get-billed-unbilled-usage-reconciliation
+#
+# depending on the type of Azure contract, you will need to
+# provide one ore more of the following items.
+#
+
+# Azure EA App client ID
+public var client_id = "Your-client-ID"
+# Azure EA App client secret
+public var client_secret = "Your-client-secret"
+# Azure Tenant ID of Client App
+public var tenant_id = "Your-tenant-ID"
+# Use "current" or "last" to get daily rated usage (unbilled data) for the current or last calendar month or billing period.
+public var billingPeriod = "last"
+# Choose "full" for all attributes or "basic" for a limited set. The default value is "full."
+public var attributeSet = "basic"
+# Partner billing currency code.
+public var currencyCode = "EUR"
+# authentication endpoint - replace tenant_id with common for generic use cases
+var auth_endpoint = "https://login.microsoftonline.com/${tenant_id}/oauth2/v2.0/token" 
+# Extract unbilled data (yes/no)
+public var extract_unbilled = "yes" 
+# Extract billed data for month (yes/no)
+public var extract_billed = "yes" 
+# set loglevel to INFO/DEBUGX for troubleshooting
+public var loglevel = "DEBUGX"
+
+# file locations
+public var exportdir = "system/extracted/AzureNCEv2"
+var json_filedir = "${exportdir}"
+loglevel ${loglevel}
+
+if (${extract_billed} == "yes") {
+	if (${ARGC} == 1)) {
+		gosub check_dateformat(${ARG_1})
+		gosub format_date(${ARG_1})
+	}
+	else {
+		print "To extract billed data. Please include the month argument in YYYYMMDD format"
+		terminate with error
+	}
+}
+
+# Process (Two APIs):
+
+#Usage line-item endpoint
+#Use this API to retrieve billed or unbilled daily rated usage line items. You get a 202 HTTP status and a URL in the location header. Poll this URL at regular intervals until you receive a success status with a manifest URL.
+
+#Operation status endpoint
+#To get a success status, keep calling this API at a regular interval. If the data isn't ready, the API response includes a Retry-After header to tell you how long to wait before trying again. When the operation is complete, you get a manifest resource with a storage folder where you can download the usage data. The response breaks up the files into smaller pieces for optimized throughput and I/O parallelism.
+
+if (${extract_unbilled} == "yes") {
+
+	# generateDetailedCostReport request
+	gosub authenticate()
+	clear http_headers
+	set http_savefile "${json_filedir}/request_report_savefile.json"
+	set http_header "Accept: application/json"
+	set http_header "Authorization: Bearer ${access_token}"
+	print "Succesfully authenticated, generating cost report request..."
+
+	var request_body = "{\"currencyCode\":\"${currencyCode}\",\"billingPeriod\":\"${billingPeriod}\",\"attributeSet\":\"${attributeSet}\"}}"
+
+	print "Step 1: Submit request to Usage line-item endpoint"
+	# var csv_suffix = "${extract_period}"
+	set http_header "Content-Type: application/json"
+	set http_body data ${request_body}
+	buffer request_usage = http POST "https://graph.microsoft.com/v1.0/reports/partners/billing/usage/unbilled/export"
+	#http dump_headers
+	gosub validate_response({request_usage})
+
+	print "Step 2: Check request status to Operation status endpoint"
+
+	if (${poll_location.LENGTH} != 0) {  
+    	buffer check_status = http GET ${poll_location}
+		gosub polling("yes", "no") # Calls the polling subroutine but only extracting unbilled data
+	} else {  
+    	print "location header is not present"
+		terminate with error
+	}
+}
+
+if (${extract_billed} == "yes") {
+
+	# generateDetailedCostReport request
+	gosub authenticate()
+	clear http_headers
+	set http_savefile "${json_filedir}/request_report_savefile.json"
+	set http_header "Accept: application/json"
+	set http_header "Authorization: Bearer ${access_token}"
+	print "Succesfully authenticated, generating cost report request..."
+
+	# Extract invoice list
+	# try three times if HTTP 500  error
+	print "Extract invoice list"
+	loop 3 {
+		buffer invoices = http GET "https://api.partnercenter.microsoft.com/v1/invoices?size=1&offset=0"
+		if (${HTTP_STATUS_CODE} == 500) {
+			print "HTTP 500 error, will retry in 10 seconds..."
+			pause 10000
+		} else {
+			gosub validate_response({invoices})
+			exit_loop
+		}
+	}
+	#print {invoices}
+
+	var invoice_id = "EXIVITY_NOT_FOUND"
+	foreach $JSON{invoices}.[items] as this_invoice {
+	var invoice_start_date = $JSON(this_invoice).[billingPeriodStartDate]
+		foreach $JSON(this_invoice).[invoiceDetails] as this_invoice_detail {
+			if ("${invoice_start_date}" == "${year}-${month}-01T00:00:00Z") { 
+				var invoice_id = $JSON(this_invoice).[id]
+			}
+		}
+	}
+	print "The report id is: ${invoice_id}"
+	if (${invoice_id} == "EXIVITY_NOT_FOUND") {
+		print "Invoice Id not found..."
+		terminate with error
+	}
+
+
+	var request_body = "{\"invoiceId\":\"${invoice_id}\",\"attributeSet\":\"${attributeSet}\"}}"
+	print "Step 1: Submit request to Usage line-item endpoint for invoice ${invoice_id}"
+	# var csv_suffix = "${extract_period}"
+	set http_header "Content-Type: application/json"
+	set http_body data ${request_body}
+	buffer request_usage = http POST "https://graph.microsoft.com/v1.0/reports/partners/billing/usage/billed/export"
+	#http dump_headers
+	gosub validate_response({request_usage})
+
+	print "Step 2: Check request status to Operation status endpoint"
+
+	if (${poll_location.LENGTH} != 0) {  
+    	buffer check_status = http GET ${poll_location}
+		gosub polling("no", "yes") # Calls the polling subroutine but only extracting billed data
+	} else {  
+    	print "location header is not present"
+		terminate with error
+	}
+}
+
+print "Finished downloading all report files."
+
+
+#
+# subroutines
+#
+
+# response validator
+subroutine validate_response {
+	if (${HTTP_STATUS_CODE}=="202") {
+		http get_header location as poll_location
+	}
+
+    if (${HTTP_STATUS_CODE} !~ /200|202/) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format ${SUBARG_1}
+        print ${SUBARG_1}
+        terminate with error
+    }
+}
+
+
+# authenticate
+subroutine authenticate {
+	print "Getting Token..."
+	clear http_headers
+	uri encode-component client_id
+	uri encode-component client_secret
+	set http_body data "scope=https%3A%2F%2Fgraph.microsoft.com%2F.default&client_id=${client_id}&client_secret=${client_secret}&grant_type=client_credentials"
+	set http_header "Content-Type: application/x-www-form-urlencoded"
+	set http_savefile "${json_filedir}/http_savefile_auth.json"
+	buffer token = http POST "${auth_endpoint}"
+	gosub validate_response({token})
+	var access_token = "$JSON{token}.[access_token]"
+	uri encode-component access_token
+}
+
+# polling logic
+subroutine polling {
+	if (${HTTP_STATUS_CODE}=="410") {
+		print "The manifest link is only active for a specific duration set by the server. After this time elapses, you must submit a new request to access the manifest."
+		terminate with error
+	}
+	if (${HTTP_STATUS_CODE}=="202") {
+		http get_header retry-after as poll_wait
+		http dump_headers
+		loop polling_loop {
+			print "waiting for ${poll_wait} ..."
+			pause ${poll_wait}
+			print "calling endpoint "${poll_location}" ..."
+			buffer check_status = http get ${poll_location}
+			if (${HTTP_STATUS_CODE}=="200") {
+				exit_loop
+			}
+		}
+	}
+	if (${HTTP_STATUS_CODE}=="200") {
+	print "received http 200, report is ready for download from blob storage..."
+	#print {check_status}
+
+	print "Step 3: Download daily rated usage reconciliation line items from Azure blob storage"
+
+	clear http_headers
+	var csv_count = 0
+	var rootDirectory = $JSON{check_status}.[resourceLocation].[rootDirectory]
+	var sasToken = $JSON{check_status}.[resourceLocation].[sasToken]
+	var createdDateTime = $JSON{check_status}.[resourceLocation].[createdDateTime]
+	match varsearch "BillingMonth=([^/]+)" ${rootDirectory}
+	if (${varsearch.STATUS} == MATCH) {
+    	print Billing month is: ${varsearch.RESULT}
+		var billingMonth = ${varsearch.RESULT}
+	}
+	foreach $JSON{check_status}.[resourceLocation].[blobs] as this_blob {
+		var csv_count += 1
+		var blob_name = $JSON(this_blob).[name]
+		var blob_url = "${rootDirectory}/${blob_name}?${sasToken}"
+		print "downloading report from ${blob_url} ..."
+		
+		set http_savefile "${exportdir}/blob/azure_${billingMonth}_${csv_count}.json.gz" # CHANGE THE FOLDER
+		set http_header "Date: ${createdDateTime}"
+		buffer blob_json = http get ${blob_url}
+		gosub validate_response({blob_json})
+
+		#unzipping downloaded file
+		gunzip {blob_json} as "${exportdir}/blob/azure_${billingMonth}_${csv_count}.json" # CHANGE THE FOLDER
+		buffer json_file = FILE "${exportdir}/blob/azure_${billingMonth}_${csv_count}.json" # CHANGE THE FOLDER
+		#json format {json_file}
+		#print {json_file}
+
+		if (${SUBARG_1} == "yes") {
+		csv csv_export = "${exportdir}/blob/azure_unbilled_${billingMonth}_${csv_count}.csv" # CHANGE THE FOLDER
+		}
+
+		if (${SUBARG_2} == "yes") {
+		csv csv_export = "${exportdir}/blob/azure_billed_${billingMonth}_${csv_count}.csv" # CHANGE THE FOLDER
+		}
+		
+		if (${attributeSet} == "full") {
+			csv add_headers "csv_export" PartnerId PartnerName CustomerId CustomerName CustomerDomainName CustomerCountry MpnId Tier2MpnId ProductId SkuId AvailabilityId SkuName ProductName PublisherName PublisherId SubscriptionDescription SubscriptionId ChargeStartDate ChargeEndDate UsageDate MeterType MeterCategory MeterId MeterSubCategory MeterName MeterRegion Unit ResourceLocation ConsumedService ResourceGroup ResourceURI ChargeType UnitPrice Quantity UnitType BillingPreTaxTotal BillingCurrency PricingPreTaxTotal PricingCurrency ServiceInfo1 ServiceInfo2 Tags AdditionalInfo EffectiveUnitPrice PCToBCExchangeRate PCToBCExchangeRateDate EntitlementId EntitlementDescription PartnerEarnedCreditPercentage CreditPercentage CreditType BenefitType
+
+			csv fix_headers "csv_export"
+
+			json_lines_to_array {json_file} # Transforming data into json array
+			foreach $JSON{json_file}.[data] as this_item
+			{
+    			#print $JSON(this_item)
+				csv write_field "csv_export" $JSON(this_item).[PartnerId]
+				csv write_field "csv_export" $JSON(this_item).[PartnerName]
+				csv write_field "csv_export" $JSON(this_item).[CustomerId]
+				csv write_field "csv_export" $JSON(this_item).[CustomerName]
+				csv write_field "csv_export" $JSON(this_item).[CustomerDomainName]
+				csv write_field "csv_export" $JSON(this_item).[CustomerCountry]
+				csv write_field "csv_export" $JSON(this_item).[MpnId]
+				csv write_field "csv_export" $JSON(this_item).[Tier2MpnId]
+				csv write_field "csv_export" $JSON(this_item).[ProductId]
+				csv write_field "csv_export" $JSON(this_item).[SkuId]
+				csv write_field "csv_export" $JSON(this_item).[AvailabilityId]
+				csv write_field "csv_export" $JSON(this_item).[SkuName]
+				csv write_field "csv_export" $JSON(this_item).[ProductName]
+				csv write_field "csv_export" $JSON(this_item).[PublisherName]
+				csv write_field "csv_export" $JSON(this_item).[PublisherId]
+				csv write_field "csv_export" $JSON(this_item).[SubscriptionDescription]
+				csv write_field "csv_export" $JSON(this_item).[SubscriptionId]
+				csv write_field "csv_export" $JSON(this_item).[ChargeStartDate]
+				csv write_field "csv_export" $JSON(this_item).[ChargeEndDate]
+				csv write_field "csv_export" $JSON(this_item).[UsageDate]
+				csv write_field "csv_export" $JSON(this_item).[MeterType]
+				csv write_field "csv_export" $JSON(this_item).[MeterCategory]
+				csv write_field "csv_export" $JSON(this_item).[MeterId]
+				csv write_field "csv_export" $JSON(this_item).[MeterSubCategory]
+				csv write_field "csv_export" $JSON(this_item).[MeterName]
+				csv write_field "csv_export" $JSON(this_item).[MeterRegion]
+				csv write_field "csv_export" $JSON(this_item).[Unit]
+				csv write_field "csv_export" $JSON(this_item).[ResourceLocation]
+				csv write_field "csv_export" $JSON(this_item).[ConsumedService]
+				csv write_field "csv_export" $JSON(this_item).[ResourceGroup]
+				csv write_field "csv_export" $JSON(this_item).[ResourceURI]
+				csv write_field "csv_export" $JSON(this_item).[ChargeType]
+				csv write_field "csv_export" $JSON(this_item).[UnitPrice]
+				csv write_field "csv_export" $JSON(this_item).[Quantity]
+				csv write_field "csv_export" $JSON(this_item).[UnitType]
+				csv write_field "csv_export" $JSON(this_item).[BillingPreTaxTotal]
+				csv write_field "csv_export" $JSON(this_item).[BillingCurrency]
+				csv write_field "csv_export" $JSON(this_item).[PricingPreTaxTotal]
+				csv write_field "csv_export" $JSON(this_item).[PricingCurrency]
+				csv write_field "csv_export" $JSON(this_item).[ServiceInfo1]
+				csv write_field "csv_export" $JSON(this_item).[ServiceInfo2]
+				csv write_field "csv_export" $JSON(this_item).[Tags]
+				csv write_field "csv_export" $JSON(this_item).[AdditionalInfo]
+				csv write_field "csv_export" $JSON(this_item).[EffectiveUnitPrice]
+				csv write_field "csv_export" $JSON(this_item).[PCToBCExchangeRate]
+				csv write_field "csv_export" $JSON(this_item).[PCToBCExchangeRateDate]
+				csv write_field "csv_export" $JSON(this_item).[EntitlementId]
+				csv write_field "csv_export" $JSON(this_item).[EntitlementDescription]
+				csv write_field "csv_export" $JSON(this_item).[PartnerEarnedCreditPercentage]
+				csv write_field "csv_export" $JSON(this_item).[CreditPercentage]
+				csv write_field "csv_export" $JSON(this_item).[CreditType]
+				csv write_field "csv_export" $JSON(this_item).[BenefitType]
+			}
+
+			print "Full atribute report succesfully downloaded"
+			print "*******************************************"
+		}
+		else {
+			csv add_headers "csv_export" PartnerId PartnerName CustomerId CustomerName ProductId SkuId SkuName PublisherName SubscriptionId ChargeStartDate ChargeEndDate UsageDate Unit ResourceURI ChargeType UnitPrice Quantity UnitType BillingPreTaxTotal BillingCurrency PricingPreTaxTotal PricingCurrency ServiceInfo1 ServiceInfo2 Tags AdditionalInfo EffectiveUnitPrice PCToBCExchangeRate PCToBCExchangeRateDate EntitlementId CreditPercentage CreditType BenefitType
+
+			csv fix_headers "csv_export"
+
+			json_lines_to_array {json_file} # Transforming data into json array
+			foreach $JSON{json_file}.[data] as this_item
+			{
+    			#print $JSON(this_item)
+				csv write_field "csv_export" $JSON(this_item).[PartnerId]
+				csv write_field "csv_export" $JSON(this_item).[PartnerName]
+				csv write_field "csv_export" $JSON(this_item).[CustomerId]
+				csv write_field "csv_export" $JSON(this_item).[CustomerName]
+				csv write_field "csv_export" $JSON(this_item).[ProductId]
+				csv write_field "csv_export" $JSON(this_item).[SkuId]
+				csv write_field "csv_export" $JSON(this_item).[SkuName]
+				csv write_field "csv_export" $JSON(this_item).[PublisherName]
+				csv write_field "csv_export" $JSON(this_item).[SubscriptionId]
+				csv write_field "csv_export" $JSON(this_item).[ChargeStartDate]
+				csv write_field "csv_export" $JSON(this_item).[ChargeEndDate]
+				csv write_field "csv_export" $JSON(this_item).[UsageDate]
+				csv write_field "csv_export" $JSON(this_item).[Unit]
+				csv write_field "csv_export" $JSON(this_item).[ResourceURI]
+				csv write_field "csv_export" $JSON(this_item).[ChargeType]
+				csv write_field "csv_export" $JSON(this_item).[UnitPrice]
+				csv write_field "csv_export" $JSON(this_item).[Quantity]
+				csv write_field "csv_export" $JSON(this_item).[UnitType]
+				csv write_field "csv_export" $JSON(this_item).[BillingPreTaxTotal]
+				csv write_field "csv_export" $JSON(this_item).[BillingCurrency]
+				csv write_field "csv_export" $JSON(this_item).[PricingPreTaxTotal]
+				csv write_field "csv_export" $JSON(this_item).[PricingCurrency]
+				csv write_field "csv_export" $JSON(this_item).[ServiceInfo1]
+				csv write_field "csv_export" $JSON(this_item).[ServiceInfo2]
+				csv write_field "csv_export" $JSON(this_item).[Tags]
+				csv write_field "csv_export" $JSON(this_item).[AdditionalInfo]
+				csv write_field "csv_export" $JSON(this_item).[EffectiveUnitPrice]
+				csv write_field "csv_export" $JSON(this_item).[PCToBCExchangeRate]
+				csv write_field "csv_export" $JSON(this_item).[PCToBCExchangeRateDate]
+				csv write_field "csv_export" $JSON(this_item).[EntitlementId]
+				csv write_field "csv_export" $JSON(this_item).[CreditPercentage]
+				csv write_field "csv_export" $JSON(this_item).[CreditType]
+				csv write_field "csv_export" $JSON(this_item).[BenefitType]
+			}
+
+			print "Basic atribute report succesfully downloaded"
+			print "*******************************************"
+		}
+
+		
+		csv close "csv_export"
+		discard {json_file}
+
+	}
+
+	}
+}
+
+subroutine format_date {
+    #### Extract the day, month and year fields from today ####
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        # print Could not extract day from the supplied date (${today})
+        terminate with error
+    } else {
+        var day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        # print Could not extract month from the supplied date (${today})
+        terminate with error
+    } else {
+        var month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        # print Could not extract year from the supplied date (${today})
+        terminate with error
+    } else {
+        var year = ${year.RESULT}
+    }
+}
+
+subroutine check_dateformat {
+	# Validate the date format is as expected in YYYYMMDD
+	match date "^(([0-9]{4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|3[0-1])))" ${SUBARG_1}
+	if (${date.STATUS} != MATCH) {
+		print Argument error: ${SUBARG_1} is not in YYYYMMDD format
+		terminate with error
+	}
+}
