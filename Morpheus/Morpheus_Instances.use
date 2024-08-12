@@ -6,8 +6,7 @@
 #  Ensure to provide the following:
 #
 #  - hostname
-#  - username
-#  - password
+#  - bearer token
 #
 #  When extending this Extractor, be sure to checkout
 #  the  Morpheus billing API documentation at:
@@ -47,18 +46,16 @@ subroutine check_date {
 #====================== Validation ======================#
 
 # Hostname of the Morhpheys server and API
-public var hostname = "your.morpheus.hostname.local"
-# The client ID to use when interfacing with the Morpheus API
-public var client_id = "morph-customer"
+public var hostname = "your-hostname"
 # Default port is 443 for API
 public var port = "443"
+# Bearer token
+public var access_token = "a9a27..."
+# Retrieve discovered servers (yes/no)
+public var discoveredServers = "yes"
 
-# Morpheus user with access to billing API endpoint 
-public var username = "admin"
-# Password for the user above
-public encrypted var password = yX6tNXCCWz4LQ+1tFaL+V581XJcXrMhl
 
-
+# The API also provides information for computeServers, loadBalancers, virtualImages, snapshots
 
 loglevel 0
 var JSON_dir = "system/extracted/morpheus/JSON"
@@ -68,30 +65,6 @@ set http_secure no
 #
 #=================  End Configuration ==================#
 
-
-#/ Get an token  
-print "Getting Morpheus token ..."
-
-# Set up the HTTP request parameters
-set http_header "Accept: application/json"
-set http_header "Content-Type: application/x-www-form-urlencoded"
-set http_body data "username=${username}&password=${password}"
-set http_savefile "${authJSON}"
-buffer token = http POST "https://${hostname}:${port}/oauth/token?grant_type=password&scope=read&client_id=${client_id}"
-if (${HTTP_STATUS_CODE} != 200) {
-	print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
-	print The server response was:
-	json format {token} 
-	print {token}
-	terminate
-}
-print "Succesfully authenticated!"
-
-# Create a variable called ${access_token} from the auth token in {token}
-var access_token = "$JSON{token}.[access_token]"
-print "access token is ${access_token}"
-discard {token}
-
 clear http_headers
 
 print Obtaining billing data ....
@@ -99,93 +72,138 @@ set http_header "Accept: application/json"
 set http_header "Content-Type: application/x-www-form-urlencoded"
 set http_header "Authorization: Bearer ${access_token}"
 
+if (${discoveredServers} == "yes") {
+print Obtaining discoveredServers ...
+}
+
 print Getting data for: ${date_counter}
 
 loop extract_days ${date_counter} {
-	
-	# determine date values
-	var dataYear = (@SUBSTR(${dataDate}, 0, 4))
-	var dataMonth = (@SUBSTR(${dataDate}, 5, 2))
-	var dataDay = (@SUBSTR(${dataDate}, 7, 2))
-	print datadate: ${dataDate}
-	# obtain date for next day
-	var nextDate = (@DATEADD(${dataDate}, 1))
-	var nextYear = (@SUBSTR(${nextDate}, 0, 4))
-	var nextMonth = (@SUBSTR(${nextDate}, 5, 2))
-	var nextDay = (@SUBSTR(${nextDate}, 7, 2))
-	
-	# set export file
-	var export_file = "${CSV_dir}/${dataDate}_morpheus_usage.csv"
-	var usageJSON = "${JSON_dir}/${dataDate}_morpheus_usage.json"
+        
+        # determine date values
+        var dataYear = (@SUBSTR(${dataDate}, 0, 4))
+        var dataMonth = (@SUBSTR(${dataDate}, 5, 2))
+        var dataDay = (@SUBSTR(${dataDate}, 7, 2))
+        print datadate: ${dataDate}
+        # obtain date for next day
+        var nextDate = (@DATEADD(${dataDate}, 1))
+        var nextYear = (@SUBSTR(${nextDate}, 0, 4))
+        var nextMonth = (@SUBSTR(${nextDate}, 5, 2))
+        var nextDay = (@SUBSTR(${nextDate}, 7, 2))
+        
+        # set export file
+        var export_file = "${CSV_dir}/${dataDate}_morpheus_usage.csv"
+        var usageJSON = "${JSON_dir}/${dataDate}_morpheus_usage.json"
 
-	# execute the request
-	set http_savefile ${usageJSON}
-	buffer account_usage = http GET "https://${hostname}/api/billing/account/?startDate=${dataYear}-${dataMonth}-${dataDay}T00:00:00Z&&endDate=${nextYear}-${nextMonth}-${nextDay}T00:00:00Z"
-		
-	if (${HTTP_STATUS_CODE} != 200) {
-	print Server response was ${HTTP_STATUS_CODE} (expected 200)
-	print The server response was:
-	json format {account_usage} 
-	print {account_usage}
-	print Exiting
-	terminate
-	}
+        # execute the request
+        set http_savefile ${usageJSON}
+        buffer account_usage = http GET "https://${hostname}/api/billing/account/?startDate=${dataYear}-${dataMonth}-${dataDay}T00:00:00Z&&endDate=${nextYear}-${nextMonth}-${nextDay}T00:00:00Z"
 
-	csv "instance_usage" = ${export_file}
-	csv add_headers "instance_usage" zoneName zoneUUID instance_name instanceUUID refType refUUID 
-	csv add_headers "instance_usage" createdByUser siteName siteUUID siteCode status servicePlanId servicePlanName numUnits currency
-	csv add_headers "instance_usage" type pricePerUnit quantity
-	csv fix_headers "instance_usage" 
+        #print {account_usage}
+                
+        if (${HTTP_STATUS_CODE} != 200) {
+        print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        print The server response was:
+        json format {account_usage} 
+        print {account_usage}
+        print Exiting
+        terminate
+        }
 
-	#csv "compute_usage" = ${export_file}
-	#csv add_headers "compute_usage" zoneName zoneUUID 
-	#csv fix_headers "compute_usage" 
+        csv "instance_usage" = ${export_file}
+        csv add_headers "instance_usage" zoneName zoneUUID instance_name instanceUUID refType refUUID 
+        csv add_headers "instance_usage" createdByUser siteName siteUUID siteCode status servicePlanId servicePlanName numUnits currency
+        csv add_headers "instance_usage" type pricePerUnit quantity
+        csv fix_headers "instance_usage" 
 
-	foreach $JSON{account_usage}.[billingInfo].[zones] as this_zone
-	{
+        #csv "compute_usage" = ${export_file}
+        #csv add_headers "compute_usage" zoneName zoneUUID 
+        #csv fix_headers "compute_usage" 
 
-		foreach $JSON(this_zone).[instances].[instances] as this_instance
-		{
-			
-			foreach $JSON(this_instance).[containers] as this_container
-			{
-				foreach $JSON(this_container).[usages] as this_usage
-				{
-					foreach $JSON(this_usage).[applicablePrices] as this_prices
-					{
-						foreach $JSON(this_prices).[prices] as this_resource
-						{
-							# zone details
-							csv write_field instance_usage $JSON(this_zone).[zoneName]
-							csv write_field instance_usage $JSON(this_zone).[zoneUUID]
-							# instance details
-							csv write_field instance_usage $JSON(this_instance).[name]
-							csv write_field instance_usage $JSON(this_instance).[instanceUUID]
-							# container details
-							csv write_field instance_usage $JSON(this_container).[refType]
-							csv write_field instance_usage $JSON(this_container).[refUUID]
-							# usage details
-							csv write_field instance_usage $JSON(this_usage).[createdByUser]
-							csv write_field instance_usage $JSON(this_usage).[siteName]
-							csv write_field instance_usage $JSON(this_usage).[siteUUID]
-							csv write_field instance_usage $JSON(this_usage).[siteCode]
-							csv write_field instance_usage $JSON(this_usage).[status]
-							csv write_field instance_usage $JSON(this_usage).[servicePlanId]
-							csv write_field instance_usage $JSON(this_usage).[servicePlanName]
-							# applicable service plan prices
-							csv write_field instance_usage $JSON(this_prices).[numUnits]
-							csv write_field instance_usage $JSON(this_prices).[currency]						
-							# resource prices and quantities
-							csv write_field instance_usage $JSON(this_resource).[type]
-							csv write_field instance_usage $JSON(this_resource).[pricePerUnit]
-							csv write_field instance_usage $JSON(this_resource).[quantity]
-						}
-					}
-				}
-			}
-		}
-	}
-	csv close instance_usage
-	var dataDate = ${nextDate}
+        foreach $JSON{account_usage}.[billingInfo].[zones] as this_zone
+        {
+
+                foreach $JSON(this_zone).[instances].[instances] as this_instance
+                {
+                        
+                        foreach $JSON(this_instance).[containers] as this_container
+                        {
+                                foreach $JSON(this_container).[usages] as this_usage
+                                {
+                                        foreach $JSON(this_usage).[applicablePrices] as this_prices
+                                        {
+                                                foreach $JSON(this_prices).[prices] as this_resource
+                                                {
+                                                        # zone details
+                                                        csv write_field instance_usage $JSON(this_zone).[zoneName] # Cloud provider
+                                                        csv write_field instance_usage $JSON(this_zone).[zoneUUID]
+                                                        # instance details
+                                                        csv write_field instance_usage $JSON(this_instance).[name]
+                                                        csv write_field instance_usage $JSON(this_instance).[instanceUUID]
+                                                        # container details
+                                                        csv write_field instance_usage $JSON(this_container).[refType]
+                                                        csv write_field instance_usage $JSON(this_container).[refUUID]
+                                                        # usage details
+                                                        csv write_field instance_usage $JSON(this_usage).[createdByUser]
+                                                        csv write_field instance_usage $JSON(this_usage).[siteName]
+                                                        csv write_field instance_usage $JSON(this_usage).[siteUUID]
+                                                        csv write_field instance_usage $JSON(this_usage).[siteCode]
+                                                        csv write_field instance_usage $JSON(this_usage).[status]
+                                                        csv write_field instance_usage $JSON(this_usage).[servicePlanId]
+                                                        csv write_field instance_usage $JSON(this_usage).[servicePlanName]
+                                                        # applicable service plan prices
+                                                        csv write_field instance_usage $JSON(this_prices).[numUnits]
+                                                        csv write_field instance_usage $JSON(this_prices).[currency]                                            
+                                                        # resource prices and quantities
+                                                        csv write_field instance_usage $JSON(this_resource).[type]
+                                                        csv write_field instance_usage $JSON(this_resource).[pricePerUnit]
+                                                        csv write_field instance_usage $JSON(this_resource).[quantity]
+                                                }
+                                        }
+                                }
+                        }
+                }
+
+                if (${discoveredServers} == "yes") {
+                        foreach $JSON(this_zone).[discoveredServers].[servers] as this_server
+                        {
+                                foreach $JSON(this_server).[usages] as this_serverusage
+                                {
+                                        foreach $JSON(this_serverusage).[applicablePrices] as this_serverprices
+                                        {
+                                                foreach $JSON(this_serverprices).[prices] as this_serverresource
+                                                {
+                                                        # zone details
+                                                        csv write_field instance_usage $JSON(this_zone).[zoneName] # Cloud provider
+                                                        csv write_field instance_usage $JSON(this_zone).[zoneUUID]
+                                                        # server details
+                                                        csv write_field instance_usage $JSON(this_server).[name]
+                                                        csv write_field instance_usage $JSON(this_server).[instanceUUID]
+                                                        csv write_field instance_usage $JSON(this_server).[refType]
+                                                        csv write_field instance_usage $JSON(this_server).[refUUID]
+                                                        # usage details
+                                                        csv write_field instance_usage $JSON(this_serverusage).[createdByUser]
+                                                        csv write_field instance_usage $JSON(this_serverusage).[siteName]
+                                                        csv write_field instance_usage $JSON(this_serverusage).[siteUUID]
+                                                        csv write_field instance_usage $JSON(this_serverusage).[siteCode]
+                                                        csv write_field instance_usage $JSON(this_serverusage).[status]
+                                                        csv write_field instance_usage $JSON(this_serverusage).[servicePlanId]
+                                                        csv write_field instance_usage $JSON(this_serverusage).[servicePlanName]
+                                                        # applicable service plan prices
+                                                        csv write_field instance_usage $JSON(this_serverprices).[numUnits]
+                                                        csv write_field instance_usage $JSON(this_serverprices).[currency]                                              
+                                                        # resource prices and quantities
+                                                        csv write_field instance_usage $JSON(this_serverresource).[type]
+                                                        csv write_field instance_usage $JSON(this_serverresource).[pricePerUnit]
+                                                        csv write_field instance_usage $JSON(this_serverresource).[quantity]
+                                                }
+                                        }
+                                }
+                        }
+                }
+
+        }
+        csv close instance_usage
+        var dataDate = ${nextDate}
 }
 print Extractor execution completed!
