@@ -24,7 +24,7 @@ public var tenant_id = "Your-tenant-ID"
 # Use "current" or "last" to get daily rated usage (unbilled data) for the current or last calendar month or billing period.
 public var billingPeriod = "last"
 # Choose "full" for all attributes or "basic" for a limited set. The default value is "full."
-public var attributeSet = "basic"
+public var attributeSet = "full"
 # Partner billing currency code.
 public var currencyCode = "EUR"
 # authentication endpoint - replace tenant_id with common for generic use cases
