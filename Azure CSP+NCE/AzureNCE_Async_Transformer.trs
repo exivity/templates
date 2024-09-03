@@ -1,0 +1,96 @@
+# AzureNCE v2 Transformer
+
+# Setup options
+option loglevel = DEBUGX
+option embed = yes
+    
+# Import billed invoice 
+if (@FILE_EXISTS("system/extracted/AzureNCEv2/blob/azure_billed_${dataYear}${dataMonth}_1.csv")) {
+    import "system/extracted/AzureNCEv2/blob/azure_billed_${dataYear}${dataMonth}_.*.csv" source AzureNCE alias bill options { 
+    pattern = yes 
+    filter ([UsageDate] == "${dataYear}-${dataMonth}-${dataDay}")
+    }    
+} 
+else  { 
+    if (@FILE_EXISTS("system/extracted/AzureNCEv2/blob/azure_unbilled_${dataYear}${dataMonth}_1.csv"))  {
+    # Import unbilled invoice 
+    import "system/extracted/AzureNCEv2/blob/azure_unbilled_${dataYear}${dataMonth}_.*.csv" source AzureNCE alias bill options {
+    pattern = yes
+    filter ([UsageDate] == "${dataYear}-${dataMonth}-${dataDay}")
+    }     
+} else { 
+        # No invoice found
+        terminate 
+        }
+}
+
+# Transform billing data
+default dset AzureNCE.bill
+
+# Adding an extra column to be used as effective unit price
+create column effective_service_rate
+set effective_service_rate as EffectiveUnitPrice
+
+# Generic formatting
+uppercase values in columns PartnerId CustomerId SubscriptionId MeterId EntitlementId
+# Rename columns that do not need any further processing for the result dataset
+rename column MeterId to service_id
+rename column Quantity to service_quantity
+rename column EffectiveUnitPrice to service_cogs
+rename column UnitPrice to service_rate
+rename column UnitType to service_unit
+
+# Create missing columns to assist in the completion of the dataset
+create column service_charge_model value peak
+create column service_interval value individually
+create column service_source value AzurePlan
+create column service_prefix value MicrosoftNCE
+# Create columns based on existing data
+create mergedColumn service_category separator " " from service_prefix ProductName
+create mergedColumn service_name separator " " from MeterCategory MeterSubCategory MeterName
+create mergedcolumn service_instance from ResourceURI /.*\/(.*)$/
+# Overwrite subscription data with entitlement data
+set SubscriptionId as EntitlementId
+set SubscriptionDescription as EntitlementDescription
+
+# Converting pricing currency into billing currency when needed
+create column converted_rate
+set converted_rate = [effective_service_rate] * [PCToBCExchangeRate] 
+where (["BillingCurrency"] != ["PricingCurrency"]) {
+   
+   set service_rate as converted_rate
+}
+# COGS are set to zero until COGS requirements defined 
+set service_cogs = 0
+
+# Cleanup
+delete columns except service_id service_quantity service_cogs service_name service_instance service_unit service_category service_interval service_charge_model service_rate PartnerId PartnerName CustomerId CustomerName CustomerDomainName SubscriptionId SubscriptionDescription service_source
+
+# Dataset is prepared for charging engine
+if (!@DSET_EMPTY(AzureNCE.bill)) {
+    rename dset AzureNCE.bill to AzureNCE.Result
+} else {
+    # DSET is empty
+    terminate
+}
+
+default dset AzureNCE.Result
+set PartnerName as PartnerId
+
+finish AzureNCE.Result
+
+# Setup service catalog mapping
+option services = update
+services {
+    service_type = automatic
+    usages_col = service_id
+    consumption_col = service_quantity
+    cogs_col = service_cogs
+    description_col = service_name
+    instance_col = service_instance
+    unit_label_col = service_unit
+    category_col = service_category
+    interval_col  = service_interval
+    charge_model_col  = service_charge_model
+    rate_col = service_rate
+}
