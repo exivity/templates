@@ -1,0 +1,147 @@
+#################################################################
+#
+# Extractor Template to obtain mocked usage data for a date range
+#
+# This Extractor should be used for Exivity Training purposes.
+#
+#################################################################
+
+# URL  of the Baserow endpoint containing mocked usage data
+public var baserow_api = "https://api.baserow.io/api"
+# The type of usage (see lab excersise or ask  instructor)
+public var usage_type = ""
+# ID of the Baserow table (see lab excersise or ask instructor)
+public var table_id = ""  
+# Authorization token (see lab excersise or ask instructor)
+public var auth_token = "" 
+
+loglevel WARN 
+var JSON_dir = "system/extracted/${usage_type}/json"
+var CSV_dir = "system/extracted/${usage_type}"
+
+#
+#=================  End Configuration ==================#
+
+# check the execution parameters
+gosub check_datearguments()
+
+# this will allow a maximum of 2 HTTP redirects
+set http_redirect_count 2
+
+print ""
+print " =========================== Starting to fetch ${usage_type} usage data for ${startDate} to ${endDate} =========================== "
+print ""
+
+# iterate over each day in the range
+var currentDate = ${startDate}
+loop date_range {
+    # create a CSV schema and output file for each day
+    var export_file = "${CSV_dir}/${usage_type}_${currentDate}.csv"
+    print "----------------------------------------------------------------------------------------------------------------------------------------------"
+    print "Going to write usage data to ${export_file}. Use this file path for Transcript import."
+    csv "csv_usage_export" = ${export_file}
+    csv add_headers "csv_usage_export" "id" "order" "service_key" "service_category" "quantity" "unit" "instance" "interval" "service_name" "app_env" "rate" "reseller" "cogs" "customer" "usage_date"
+    csv fix_headers "csv_usage_export"
+    # set the baserow API filter for the request
+    var baserow_filter = "filters={\"filter_type\":\"AND\",\"filters\":[{\"type\":\"equal\",\"field\":\"usage_date\",\"value\":\"${currentDate}\"}],\"groups\":[]}"
+    var baserow_request = "${baserow_api}/database/rows/table/${table_id}/?user_field_names=true&${baserow_filter}"
+
+    # construct the HTTP request header using a user created token
+    clear http_headers
+    set http_header "Accept: application/json"
+    set http_header "Content-Type: application/x-www-form-urlencoded"
+    set http_header "Authorization: Token ${auth_token}"
+    # Fetch the initial request from the source
+    print "Fetching ${usage_type} usage initial page for date ${currentDate}..."
+    set http_savefile ${JSON_dir}/baserow_${currentDate}.json
+    buffer baserow_usage = http GET "${baserow_request}"
+    gosub validate_response({baserow_usage})
+
+    # this loop will execute forever, unless we exit_loop
+    var page_num = 0
+    loop pagination {
+        # write the CSV records to the csv_usage_export file
+        foreach $JSON{baserow_usage}.[results] as usage_row {
+            csv write_field csv_usage_export $JSON(usage_row).[id]
+            csv write_field csv_usage_export $JSON(usage_row).[order]
+            csv write_field csv_usage_export $JSON(usage_row).[service_key]
+            csv write_field csv_usage_export $JSON(usage_row).[service_category]
+            csv write_field csv_usage_export $JSON(usage_row).[quantity]
+            csv write_field csv_usage_export $JSON(usage_row).[unit]
+            csv write_field csv_usage_export $JSON(usage_row).[instance]
+            csv write_field csv_usage_export $JSON(usage_row).[interval]
+            csv write_field csv_usage_export $JSON(usage_row).[service_name]
+            csv write_field csv_usage_export $JSON(usage_row).[app_env]
+            csv write_field csv_usage_export $JSON(usage_row).[rate]
+            csv write_field csv_usage_export $JSON(usage_row).[customer]
+            csv write_field csv_usage_export $JSON(usage_row).[cogs]
+            csv write_field csv_usage_export $JSON(usage_row).[department]
+            csv write_field csv_usage_export $JSON(usage_row).[usage_date]
+        }
+        # if there is a next key/value in the json, we need to fetch it
+        var next = "$JSON{baserow_usage}.[next]"
+        if ( "${next}" != "null") {
+            var page_num += 1
+            print "Fetching ${usage_type} usage page ${page_num} ..."
+            set http_savefile ${JSON_dir}/baserow_pagination.json
+            buffer baserow_usage = http GET "${next}"
+        } else {
+            print "Finished pagination for date ${currentDate}."
+            var page_num = 0
+            csv close csv_usage_export
+            exit_loop
+        }
+    }
+    # Increment the current date
+    var currentDate = (@DATEADD(${currentDate}, 1))
+    if (${currentDate} > ${endDate}) {
+        exit_loop
+    }
+}
+print "----------------------------------------------------------------------------------------------------------------------------------------------"
+print "Finished writing usage data to ${export_file}. Use this file path for Transcript import."
+
+   ######  ##     ## ########  ########   #######  ##     ## ######## #### ##    ## ########  ###### 
+  ##    ## ##     ## ##     ## ##     ## ##     ## ##     ##    ##     ##  ###   ## ##       ##    ##
+  ##       ##     ## ##     ## ##     ## ##     ## ##     ##    ##     ##  ####  ## ##       ##      
+   ######  ##     ## ########  ########  ##     ## ##     ##    ##     ##  ## ## ## ######    ###### 
+        ## ##     ## ##     ## ##   ##   ##     ## ##     ##    ##     ##  ##  #### ##             ##
+  ##    ## ##     ## ##     ## ##    ##  ##     ## ##     ##    ##     ##  ##   ### ##       ##    ##
+   ######   #######  ########  ##     ##  #######   #######     ##    #### ##    ## ########  ###### 
+
+# routine to check the script arguments
+subroutine check_datearguments {
+    # Validate that amount of input arguments is as expected
+    if (${ARGC} < 2) {
+        print "This requires 2 arguments: the start and end date in yyyyMMdd format"
+        terminate with error
+    } else {
+        var startDate = ${ARG_1}
+        var endDate = ${ARG_2}
+    }
+    #
+    # Check if dates are in correct format
+    gosub check_dateformat(${startDate})
+    gosub check_dateformat(${endDate})
+}
+
+# routine to validate the date format
+subroutine check_dateformat {
+    # Validate the date format is as expected in YYYYMMDD
+    match date "^(([0-9]{4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|3[0-1])))" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Argument error: ${SUBARG_1} is not in YYYYMMDD format
+        terminate with error
+    }
+}
+
+# routine to validate the HTTP response for a buffer function
+subroutine validate_response {
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format ${SUBARG_1}
+        print ${SUBARG_1}
+        terminate with error
+    }
+}
