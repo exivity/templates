@@ -1,0 +1,74 @@
+# Nutanix Transformer
+
+# Setup import directory (Same as export directory of the Nutanix Extractor)
+var importdir = "system/extracted/Nutanix"
+
+# Import items
+import "${importdir}/${dataDate}_vms.*.csv" source nutanix alias vm  options {
+    pattern = on
+    filename_column = on
+}
+
+# Normalize items
+default dset nutanix.vm
+where ([projectname]=="EXIVITY_NOT_FOUND") {
+    set projectname to "Unknown project" 
+}
+where ([ownername]=="EXIVITY_NOT_FOUND") {
+    set ownername to "Unknown owner"
+} 
+uppercase values in columns entityid vmid ownerid projectid clusterid
+capitalise values in columns ownername projectname
+
+# Cleanup items
+default dset nutanix.vm
+rename column type to service_name
+where ([quantity] == "EXIVITY_NOT_FOUND") {
+    set quantity to 0
+} 
+where ([entityname] == [vmname]) {
+    set entityname to "VM"
+}
+rename column vmname to instance
+create column service_category value Nutanix
+aggregate nutanix.vm notime service_name match instance match vmid match projectname match instance match quantity sum
+delete columns description entityid EXIVITY_AGGR_COUNT EXIVITY_FILE_NAME
+
+# normalize memory and storage
+where ([service_name]=="mb_memory") {
+    set quantity = ([quantity]/1024)
+    set service_name to "gb_memory"
+}
+where ([service_name]=="mb_storage") {
+    set quantity = ([quantity]/1024/1024)
+    set service_name to "tb_storage"
+}
+
+# create service defaults
+create column service_key
+set service_key as service_name
+create column service_rate value 1
+create column service_cogs value 1
+
+# Export items when used in consolidation, only required when using multiple Transformers
+#export nutanix.vm as "Nutanix/${dataDate}_VM.csv"
+
+# when using  single Transformer, finish and services will be done below
+finish
+
+services {
+  # Service Definition
+  service_type = "automatic"
+  usages_col = service_key
+  description_col = service_name
+  category_col = service_category
+  instance_col = instance
+  interval = "monthly"
+  unit_label = "Units"
+  consumption_col = quantity
+  model = "unprorated"
+  charge_model = "peak"
+  # Service Rate / Revision
+  set_rate_using = service_rate
+  set_cogs_using = service_cogs
+}

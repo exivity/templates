@@ -1,0 +1,195 @@
+# Nutanix Endpoint ( IP/hostname)
+public var nutanix_endpoint = "<prism_central_ip_or_hostname>"
+# Nutanix endpoint friendly name
+public var nutanix_name = "<friendly_name>"
+# Nutanix Endpoint port number (default: 9440)
+public var nutanix_port = "9440"
+# Nutanix API UserName
+public var api_user = "exivity-api"
+# Nutanix API Password
+public var api_password = "<password>"
+# Directory where data is exported to
+public var exportdir = "system/extracted/Nutanix"
+
+# Setup Loglevel
+loglevel DEBUGX
+# Setup API endpoint
+var httproot = "https://${nutanix_endpoint}:${nutanix_port}/api/nutanix/v3"
+# Setup JSON output folder
+var jsonfolder = "${exportdir}/JSON"
+# Setup JSON body folder
+var bodyfolder = "${exportdir}/RequestBody"
+# Setup output file
+var projects_export_file = "${exportdir}/${YEAR}${MONTH}${DAY}_projects.csv"
+var vms_export_file = "${exportdir}/${YEAR}${MONTH}${DAY}_vms_${nutanix_name}.csv"
+
+# projects variables
+var projects_endpoint = "${httproot}/projects/list"
+# accounts variables
+var accounts_endpoint = "${httproot}/accounts/list"
+# vms variables
+var vms_endpoint = "${httproot}/vms/list"
+
+# get the clusters
+#set http_body data "{\"kind\":\"cluster\",\"length\":10}"
+#set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_clusters.json"
+#buffer clusters_response = http POST "${httproot}/clusters/list"
+#gosub validate_response({clusters})
+
+
+# get the vms
+
+# Create output CSV file
+csv "nutanix_vms" = "${vms_export_file}"
+csv add_headers "nutanix_vms" description entityname entityid vmname vmid ownername ownerid projectname projectid clustername clusterid type quantity state
+csv fix_headers "nutanix_vms"
+
+var current_count = 0
+gosub pagination_params()
+#var request_filter = "account_uuid==${this_account}"
+# vms list seems to timeout at 5 mins, trying 15 mins now
+set http_timeout 900
+gosub request_data("vm",${vms_endpoint})
+# Extract items to the CSV Output
+foreach $JSON{response_data}.[entities] as this_entity {
+	var current_count = (${current_count}+1)
+	#var description			= $JSON(this_entity).[spec].[description]
+	#var state				= $JSON(this_entity).[status].[state]
+	var state 				= $JSON(this_entity).[spec].[resources].[power_state]
+	var description			= $JSON(this_entity).[status].[name]
+	var entityname			= $JSON(this_entity).[spec].[name]
+	var entityid			= $JSON(this_entity).[metadata].[uuid]
+	var vmname				= $JSON(this_entity).[spec].[name]
+	var vmid				= $JSON(this_entity).[metadata].[uuid]
+	var ownername 			= $JSON(this_entity).[metadata].[owner_reference].[name]
+	var ownerid				= $JSON(this_entity).[metadata].[owner_reference].[uuid]
+	var projectname			= $JSON(this_entity).[metadata].[project_reference].[name]
+	var projectid			= $JSON(this_entity).[metadata].[project_reference].[uuid]
+	var clustername			= $JSON(this_entity).[spec].[cluster_reference].[name]
+	var clusterid			= $JSON(this_entity).[spec].[cluster_reference].[uuid]
+
+	csv write_field nutanix_vms "${description}"
+	csv write_field nutanix_vms "${entityname}"
+	csv write_field nutanix_vms "vm-${entityid}"
+	csv write_field nutanix_vms "${vmname}"
+	csv write_field nutanix_vms "${vmid}"
+	csv write_field nutanix_vms "${ownername}"
+	csv write_field nutanix_vms "${ownerid}"
+	csv write_field nutanix_vms "${projectname}"
+	csv write_field nutanix_vms "${projectid}"
+	csv write_field nutanix_vms "${clustername}"
+	csv write_field nutanix_vms "${clusterid}"
+	csv write_field nutanix_vms "vm"
+	csv write_field nutanix_vms "1"
+	csv write_field nutanix_vms "${state}"
+
+	var quantity = $JSON(this_entity).[spec].[resources].[num_sockets]
+
+	csv write_field nutanix_vms "${description}"
+	csv write_field nutanix_vms "CPU"
+	csv write_field nutanix_vms "cpu-${entityid}"
+	csv write_field nutanix_vms "${vmname}"
+	csv write_field nutanix_vms "${vmid}"
+	csv write_field nutanix_vms "${ownername}"
+	csv write_field nutanix_vms "${ownerid}"
+	csv write_field nutanix_vms "${projectname}"
+	csv write_field nutanix_vms "${projectid}"
+	csv write_field nutanix_vms "${clustername}"
+	csv write_field nutanix_vms "${clusterid}"
+	csv write_field nutanix_vms "vcpu"
+	csv write_field nutanix_vms "${quantity}"
+	csv write_field nutanix_vms "${state}"
+
+	var quantity = $JSON(this_entity).[spec].[resources].[memory_size_mib]
+
+	csv write_field nutanix_vms "${description}"
+	csv write_field nutanix_vms "MEMORY"
+	csv write_field nutanix_vms "mem-${entityid}"
+	csv write_field nutanix_vms "${vmname}"
+	csv write_field nutanix_vms "${vmid}"
+	csv write_field nutanix_vms "${ownername}"
+	csv write_field nutanix_vms "${ownerid}"
+	csv write_field nutanix_vms "${projectname}"
+	csv write_field nutanix_vms "${projectid}"
+	csv write_field nutanix_vms "${clustername}"
+	csv write_field nutanix_vms "${clusterid}"
+	csv write_field nutanix_vms "mb_memory"
+	csv write_field nutanix_vms "${quantity}"
+	csv write_field nutanix_vms "${state}"
+
+	foreach $JSON(this_entity).[spec].[resources].[disk_list] as this_disk {
+		var entityname = $JSON(this_disk).[device_properties].[device_type]
+		var entityid = $JSON(this_disk).[uuid]
+		var quantity = $JSON(this_disk).[disk_size_mib]
+
+		csv write_field nutanix_vms "${description}"
+		csv write_field nutanix_vms "${entityname}"
+		csv write_field nutanix_vms "disk-${entityid}"
+		csv write_field nutanix_vms "${vmname}"
+		csv write_field nutanix_vms "${vmid}"
+		csv write_field nutanix_vms "${ownername}"
+		csv write_field nutanix_vms "${ownerid}"
+		csv write_field nutanix_vms "${projectname}"
+		csv write_field nutanix_vms "${projectid}"
+		csv write_field nutanix_vms "${clustername}"
+		csv write_field nutanix_vms "${clusterid}"
+		csv write_field nutanix_vms "mb_storage"
+		csv write_field nutanix_vms "${quantity}"
+		csv write_field nutanix_vms "${state}"
+	}
+
+}
+if ("${current_count}" == "${total_entities}") {
+	print "Obtained all ${total_entities} vm entities."
+} else {
+	print "Obtained ${current_count} of ${total_entities} vm entities, getting next offset ..." 
+}
+
+csv close "nutanix_vms"
+terminate
+
+# get the aps
+#set http_body data "{\"kind\":\"app\",\"length\":10}"
+#set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_app_list.json"
+#buffer nutanixvms = http POST "${httproot}/nutanix/v1/vms/list"
+#buffer nutanixvms = http POST "${httproot}/vms/list"
+#buffer nutanixvms = http POST "${httproot}/apps/list"
+#if (${HTTP_STATUS_CODE} != 200) {
+#	gosub write_http_error (${HTTP_STATUS_CODE})
+#}
+
+#### Subroutines ####
+subroutine validate_response {
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format ${SUBARG_1}
+        print ${SUBARG_1}
+        terminate with error
+    }
+}
+
+subroutine pagination_params {
+	var current_count = 0
+	var request_filter = ""
+	var request_offset = 0
+	var request_length = 250
+}
+
+subroutine request_data {
+	var request_kind = ${SUBARG_1}
+	var request_uri = ${SUBARG_2}
+	clear http_headers
+	set http_secure no
+	set http_username ${api_user}
+	set http_password ${api_password}
+	set http_authtype basic
+	set http_header "Content-Type: application/json"
+	set http_header "Accept: application/json"
+	set http_body data "{\"kind\":\"${request_kind}\",\"filter\":\"${request_filter}\",\"length\":${request_length},\"offset\":${request_offset}}"
+	set http_savefile "${jsonfolder}/${YEAR}${MONTH}${DAY}_${request_offset}_${request_kind}.json"
+	buffer response_data = http POST "${request_uri}"
+	gosub validate_response({projects_response})
+	var total_entities = $JSON{response_data}.[metadata].[total_matches]
+	var request_offset = (${request_offset}+1)
+}
