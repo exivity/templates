@@ -26,6 +26,26 @@ where ([pricePerUnit]=="null") {
   set pricePerUnit to 0
 }
 
+# Change the units based on the type
+create column unit value "Hours"
+
+where ([type]=="memory") {
+  set quantity = [quantity] / 1024 #Convert MBs to GBs. in Memory
+  set unit to "GB * Hour"
+}
+
+where ([type]=="storage") {
+  set unit to "GB * Hour"
+}
+
+where ([type]=="cores") {
+  set unit to "Cores * Hour"
+}
+
+where ([type]=="cpu") {
+  set unit to "CPU * Hour"
+}
+
 # create the uage and rate columns
 create column consumed_units
 set consumed_units = [numUnits]*[quantity]
@@ -45,6 +65,6 @@ services {
   set_rate_using = pricePerUnit # columns to pre-populate the rate
   cogs_col = pricePerUnit # the column containing the CoG rate values
   interval = individually
-  unit_label = "Hours" # the column containing the unit label
+  unit_label_col = unit # the column containing the unit label
   consumption_col = consumed_units # the column containing the consumed quantity
 }
