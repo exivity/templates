@@ -30,7 +30,6 @@ where ([pricePerUnit]=="null") {
 create column unit value "Hours"
 
 where ([type]=="memory") {
-  set quantity = [quantity] / 1024 #Convert MBs to GBs. in Memory
   set unit to "GB * Hour"
 }
 
