@@ -1,0 +1,387 @@
+#======================== Configuration ========================#
+#
+# This is a vCenter 7.0 REST API Extractor . It obtains basic 
+# VM information such as:
+# - vm name,ram MiB, cpu count, power state and more
+# 
+#
+# Also it obtains information for other objects like:
+# - Folders
+# - Data stores
+# - Clusters
+# - VM Tags
+#
+# All is written to date/time aware CSV files. These files
+# can be imported in any Transformer for further handling
+#
+# Please consult https://docs.exivity.com for more information
+#
+
+loglevel DEBUGX # adjust log detail to: DEBUG, INFO, WARN
+
+# Change this value to your local vCenter hostname or IP address
+public var vcenter = "vcenter-hostname"
+# Change this value to your local vCenter TCP Port
+public var tcpport = "443"
+# Username that is allowed to call the vCenter REST API
+public var username = "username"
+# Password for the username to call the vCenter REST API
+public var password = "password"
+# When using self-signed or unknown SSL certificates, set to "no" to disable secure mode
+public var secure_ssl = "yes"
+
+set http_secure ${secure_ssl}
+
+var JSON_dir = "system/extracted/VC65/json" # directory should exist
+var CSV_dir = "system/extracted/VC65"       # directory should exist
+var clusterJSON = "${JSON_dir}/vcenter_cluster.json"
+var dcJSON = "${JSON_dir}/vcenter_dc.json"
+var dsJSON = "${JSON_dir}/vcenter_ds.json"
+var tagsJSON = "${JSON_dir}/vcenter_tags.json"
+var obtagsJSON = "${JSON_dir}/objects_tags.json"
+var folderJSON = "${JSON_dir}/vcenter_folder.json"
+var dc_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_dc_inventory.csv"
+var folder_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_folder_inventory.csv"
+var folder_info_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_folder_info.csv"
+var datastore_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_datastore_inventory.csv"
+var cluster_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_cluster_inventory.csv"
+var vm_details_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_vm_inventory.csv"
+var vm_info_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_vm_info.csv"
+var cluster_tags_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_cluster_tags.csv"
+var object_tags_export_file = "${CSV_dir}/${YEAR}${MONTH}${DAY}_${vcenter}_object_tags.csv"
+
+#
+#=================  End Configuration ==================#
+
+#/ Get a token from vCenter
+print "Getting VC 6.5 API Token"
+
+# Set up the HTTP request parameters
+set http_username ${username}
+set http_password ${password}
+set http_authtype basic
+set http_savefile "${JSON_dir}/http_savefile.json"
+
+# Get VC Token and cache it in a buffer called {token}
+buffer token = http POST "https://${vcenter}:${tcpport}/api/com/vmware/cis/session"
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+    print The server response was:
+    json format {token}
+    print {token}
+    terminate
+}
+
+# save the access token
+var access_token = $JSON{token}.[value]
+discard {token}
+
+# Definition of the csv files
+csv "datacenter_details" = ${dc_details_export_file}
+csv add_headers "datacenter_details" datacenter name
+csv fix_headers "datacenter_details"
+
+csv "datastore_details" = ${datastore_details_export_file}
+csv add_headers "datastore_details" datacenter capacity datastore free_space name type
+csv fix_headers "datastore_details"
+
+csv "folder_details" = ${folder_details_export_file}
+csv add_headers "folder_details" datacenter folder type name
+csv fix_headers "folder_details"
+
+csv "folder_info" = ${folder_info_export_file}
+csv add_headers "folder_info" vmid name folder foldername
+csv fix_headers "folder_info"
+
+csv "cluster_details" = ${cluster_details_export_file}
+csv add_headers "cluster_details" datacenter cluster name
+csv fix_headers "cluster_details"
+
+csv "vm_details" = ${vm_details_export_file}
+csv add_headers "vm_details" vmid name memory_size_MiB cpu_count power_state cluster_name
+csv fix_headers "vm_details"
+
+csv "vm_info" = ${vm_info_export_file}
+csv add_headers "vm_info" vmid name memory_size_MiB cpu_count OS_Type Disk Disk_Capacity DataStore power_state cluster_name
+csv fix_headers "vm_info"
+
+csv "cluster_tags" = ${cluster_tags_export_file}
+csv add_headers "cluster_tags" category_id description tagid name category_name
+csv fix_headers "cluster_tags"
+
+csv "object_tags" = ${object_tags_export_file}
+csv add_headers "object_tags" tagid id type
+csv fix_headers "object_tags"
+
+# End of definition of the csv files
+
+# Get all tags
+clear http_headers
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${tagsJSON}
+buffer tags = http GET "https://${vcenter}:${tcpport}/api/com/vmware/cis/tagging/tag"
+if (${HTTP_STATUS_CODE} != 200) {
+    json format {tags}
+    terminate
+}
+
+# Loop through the tags and save them to CSV
+foreach $JSON{tags}.[value] as this_tag {
+    var newTag = $JSON(this_tag)
+
+    clear http_headers
+    set http_header "vmware-api-session-id: ${access_token}"
+    set http_header "Content-Type: application/json"
+    set http_savefile ${tagsJSON}
+    buffer taginfo = http GET "https://${vcenter}:${tcpport}/api/com/vmware/cis/tagging/tag/id:${newTag}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        json format {taginfo}
+        terminate
+    }
+
+    foreach $JSON{taginfo} as this_taginfo {
+        var category_id = $JSON(this_taginfo).[category_id]
+        csv write_field cluster_tags $JSON(this_taginfo).[category_id]
+        csv write_field cluster_tags $JSON(this_taginfo).[description]
+        csv write_field cluster_tags $JSON(this_taginfo).[id]
+        csv write_field cluster_tags $JSON(this_taginfo).[name]
+
+        clear http_headers
+        set http_header "vmware-api-session-id: ${access_token}"
+        set http_header "Content-Type: application/json"
+        buffer categoryinfo = http GET "https://${vcenter}:${tcpport}/api/com/vmware/cis/tagging/category/id:${category_id}"
+        if (${HTTP_STATUS_CODE} != 200) {
+            json format {taginfo}
+            terminate
+        }
+
+        foreach $JSON{categoryinfo} as this_categoryinfo {
+            csv write_field cluster_tags $JSON(this_categoryinfo).[name]
+        }
+        discard {categoryinfo}
+    }
+    discard {taginfo}
+
+    clear http_headers
+    set http_header "vmware-api-session-id: ${access_token}"
+    set http_header "Content-Type: application/json"
+    set http_savefile ${obtagsJSON}
+    buffer taguser = http POST "https://${vcenter}:${tcpport}/api/com/vmware/cis/tagging/tag-association/id:${newTag}?~action=list-attached-objects"
+    if (${HTTP_STATUS_CODE} != 200) {
+        json format {taguser}
+        terminate
+    }
+
+    foreach $JSON{taguser}.[value] as this_taguser {
+        csv write_field object_tags ${newTag}
+        csv write_field object_tags $JSON(this_taguser).[id]
+        csv write_field object_tags $JSON(this_taguser).[type]
+    }
+    discard {taguser}
+}
+discard {tags}
+csv close "cluster_tags"
+csv close "object_tags"
+
+# Get all datacenters (new payload structure)
+clear http_headers
+set http_header "vmware-api-session-id: ${access_token}"
+set http_header "Content-Type: application/json"
+set http_savefile ${dcJSON}
+buffer datacenters = http GET "https://${vcenter}:${tcpport}/api/vcenter/datacenter"
+if (${HTTP_STATUS_CODE} != 200) {
+    json format {datacenters}
+    terminate
+}
+
+# Loop through the *new* datacenter payload directly
+foreach $JSON{datacenters} as this_dc {
+    csv write_field datacenter_details $JSON(this_dc).[datacenter]
+    csv write_field datacenter_details $JSON(this_dc).[name]
+}
+discard {datacenters}
+csv close "datacenter_details"
+
+# Re-load DC JSON from file for subsequent calls
+buffer datacenters = FILE "${dcJSON}"
+foreach $JSON{datacenters} as this_dc {
+
+    var dcName = $JSON(this_dc).[datacenter]
+
+    # Get all datastores filtering by dc
+    clear http_headers
+    set http_header "vmware-api-session-id: ${access_token}"
+    set http_header "Content-Type: application/json"
+    set http_savefile ${dsJSON}
+    buffer datastores = http GET "https://${vcenter}:${tcpport}/api/vcenter/datastore?filter.datacenters=${dcName}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        json format {datastores}
+        terminate
+    }
+
+    # Loop through the datastore and save it in csv
+    foreach $JSON{datastores}.[value] as this_datastore {
+        csv write_field datastore_details ${dcName}
+        csv write_field datastore_details $JSON(this_datastore).[capacity]
+        csv write_field datastore_details $JSON(this_datastore).[datastore]
+        csv write_field datastore_details $JSON(this_datastore).[free_space]
+        csv write_field datastore_details $JSON(this_datastore).[name]
+        csv write_field datastore_details $JSON(this_datastore).[type]
+    }
+    discard {datastores}
+
+    # Get all folders filtering by dc
+    clear http_headers
+    set http_header "vmware-api-session-id: ${access_token}"
+    set http_header "Content-Type: application/json"
+    set http_savefile ${folderJSON}
+    buffer folders = http GET "https://${vcenter}:${tcpport}/api/vcenter/folder?filter.datacenters=${dcName}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        json format {folders}
+        terminate
+    }
+
+    # Loop through the folders and save it in csv
+    foreach $JSON{folders}.[value] as this_folder {
+        csv write_field folder_details ${dcName}
+        csv write_field folder_details $JSON(this_folder).[folder]
+        csv write_field folder_details $JSON(this_folder).[type]
+        csv write_field folder_details $JSON(this_folder).[name]
+    }
+    discard {folders}
+
+    # For each folder, also map VMs to that folder
+    buffer folders = FILE "${folderJSON}"
+    foreach $JSON{folders}.[value] as this_folder {
+        var folder = $JSON(this_folder).[folder]
+        var folderName = $JSON(this_folder).[name]
+
+        clear http_headers
+        set http_header "vmware-api-session-id: ${access_token}"
+        set http_header "Content-Type: application/json"
+        set http_savefile ${clusterJSON}
+        buffer clusters = http GET "https://${vcenter}:${tcpport}/api/vcenter/vm?filter.folders=${folder}"
+        if (${HTTP_STATUS_CODE} != 200) {
+            json format {clusters}
+            terminate
+        }
+
+        foreach $JSON{clusters}.[value] as this_cluster {
+            csv write_field folder_info $JSON(this_cluster).[vm]
+            csv write_field folder_info $JSON(this_cluster).[name]
+            csv write_field folder_info ${folder}
+            csv write_field folder_info ${folderName}
+        }
+        discard {clusters}
+    }
+    discard {folders}
+
+    # Get all clusters filtering by dc
+    clear http_headers
+    set http_header "vmware-api-session-id: ${access_token}"
+    set http_header "Content-Type: application/json"
+    set http_savefile ${clusterJSON}
+    buffer clusters = http GET "https://${vcenter}:${tcpport}/api/vcenter/cluster?filter.datacenters=${dcName}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        json format {clusters}
+        terminate
+    }
+
+    # Loop through the clusters in that DC and save to CSV
+    foreach $JSON{clusters}.[value] as this_cluster {
+        csv write_field cluster_details ${dcName}
+        csv write_field cluster_details $JSON(this_cluster).[cluster]
+        csv write_field cluster_details $JSON(this_cluster).[name]
+    }
+    discard {clusters}
+}
+csv close "cluster_details"
+csv close "datastore_details"
+csv close "folder_details"
+csv close "folder_info"
+discard {datacenters}
+
+# Getting basic info from all the VMs of each cluster
+buffer clusters = FILE "${clusterJSON}"
+foreach $JSON{clusters}.[value] as this_cluster
+{
+    var clusterName = $JSON(this_cluster).[cluster]
+    var vmsJSON = "${JSON_dir}/vcenter_vms${clusterName}.json"
+
+    clear http_headers
+    set http_header "vmware-api-session-id: ${access_token}"
+    set http_header "Content-Type: application/json"
+    set http_savefile ${vmsJSON}
+
+    buffer vms = http GET "https://${vcenter}:${tcpport}/api/vcenter/vm?filter.clusters=${clusterName}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        json format {vms}
+        terminate
+    }
+
+    # Looping through the VMs and saving data into csv
+    foreach $JSON{vms}.[value] as this_vm {
+        csv write_field vm_details $JSON(this_vm).[vm]
+        csv write_field vm_details $JSON(this_vm).[name]
+        csv write_field vm_details $JSON(this_vm).[memory_size_MiB]
+        csv write_field vm_details $JSON(this_vm).[cpu_count]
+        csv write_field vm_details $JSON(this_vm).[power_state]
+        csv write_field vm_details ${clusterName}
+    }
+
+    # Get more granular info for each VM of the cluster
+    buffer clusterVM = FILE "${vmsJSON}"
+    foreach $JSON{clusterVM}.[value] as this_clusterVM {
+        var VM_ID = $JSON(this_clusterVM).[vm]
+        var vmsInfoJSON = "${JSON_dir}/vcenter_unique${VM_ID}.json"
+
+        loop GetVM {
+            clear http_headers
+            set http_header "vmware-api-session-id: ${access_token}"
+            set http_header "Content-Type: application/json"
+            set http_savefile ${vmsInfoJSON}
+
+            buffer VM = http GET "https://${vcenter}:${tcpport}/api/vcenter/vm/${VM_ID}"
+            if (${HTTP_STATUS_CODE} != 200) {
+                json format {VM}
+                # Retry after a pause if desired
+                pause 1500
+            } else {
+                exit_loop
+            }
+        }
+
+        foreach $JSON{VM}.[value].[disks] as this_VMDisk {
+            csv write_field vm_info ${VM_ID}
+            csv write_field vm_info $JSON{VM}.[value].[name]
+            csv write_field vm_info $JSON{VM}.[value].[memory].[size_MiB]
+            csv write_field vm_info $JSON{VM}.[value].[cpu].[count]
+
+            var capacity = $JSON(this_VMDisk).[value].[capacity]    # capacity in bytes
+            var capacity = (${capacity} / 1024)                     # => KB
+            var capacity = (${capacity} / 1024)                     # => MB
+            var capacity = (${capacity} / 1024)                     # => GB
+
+            csv write_field vm_info $JSON{VM}.[value].[guest_OS]
+            csv write_field vm_info $JSON(this_VMDisk).[value].[label]
+            csv write_field vm_info ${capacity}
+
+            var mmdkfile = $JSON(this_VMDisk).[value].[backing].[vmdk_file]
+            match datastore "^\[*\[([^\]]+)\].*" "${mmdkfile}"
+            csv write_field vm_info ${datastore.RESULT}
+            csv write_field vm_info $JSON{VM}.[value].[power_state]
+            csv write_field vm_info ${clusterName}
+        }
+
+        discard {VM}
+    }
+    discard {clusterVM}
+    discard {vms}
+}
+discard {clusters}
+
+csv close "vm_details"
+csv close "vm_info"
+
+print All information retrieved
