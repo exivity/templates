@@ -1,0 +1,166 @@
+# Morpheus Hourly Instance & Container Extractor Script
+#
+# This Exivity USE Extractor retrieves hourly billing usage data from the Morpheus API for a specified date range.
+# It authenticates using OAuth2, iterates through each hour of each day within the date range, and saves the retrieved
+# data both in JSON and CSV formats. The CSV output includes granular instance-level container usage and pricing information.
+#
+# Script arguments:
+#   - from_date (yyyyMMdd)
+#   - to_date (yyyyMMdd)
+#
+# Output:
+#   - JSON files in: system/extracted/morpheus/JSON/YYYY/MM/
+#   - CSV files in:  system/extracted/morpheus/CSV/YYYY/MM/
+#
+# Requirements:
+#  - a Morpheus user with permission to read all objects inside Morpheus
+#
+
+
+#==================== Morpheus Hourly Extractor ====================#
+
+public var hostname = "morpheus.hostname.local"
+public var client_id = "morph-api"
+public var port = "443"
+public var username = "service-account@hostname.local"
+public var password = "password"
+
+# loglevel 0
+
+#====================== Validation ======================#
+if (${ARGC} != 2)
+{
+    print This requires 2 arguments: from and to dates in yyyyMMdd format
+    terminate with error
+} else {
+    var from_date = ${ARG_1}
+    var to_date = ${ARG_2}
+}
+gosub check_date(${from_date})
+gosub check_date(${to_date})
+var date_counter = (@DATEDIFF(${to_date},${from_date}))
+var date_counter = (${date_counter}+1)
+var dataDate = ${from_date}
+
+set http_secure no
+
+#================= Authentication ==================#
+print "Getting Morpheus token ..."
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_body data "username=${username}&password=${password}"
+
+buffer token = http POST "https://${hostname}:${port}/oauth/token?grant_type=password&scope=read&client_id=${client_id}"
+if (${HTTP_STATUS_CODE} != 200) {
+    print "Got HTTP status ${HTTP_STATUS_CODE}, expected 200"
+    json format {token}
+    print {token}
+    terminate
+}
+print "Successfully authenticated!"
+var access_token = "$JSON{token}.[access_token]"
+discard {token}
+
+#================= Data Extraction Loop ==================#
+loop extract_days ${date_counter} {
+    var dataYear = (@SUBSTR(${dataDate}, 0, 4))
+    var dataMonth = (@SUBSTR(${dataDate}, 5, 2))
+    var dataDay = (@SUBSTR(${dataDate}, 7, 2))
+    var JSON_dir = "system/extracted/morpheus/JSON/${dataYear}/${dataMonth}"
+    var CSV_dir = "system/extracted/morpheus/CSV/${dataYear}/${dataMonth}"
+
+    print "Extracting data for: ${dataDate}"
+
+    var hour = 0
+    print -n "  Hour: "
+    loop hourly_loop 24 {
+        var hour_str = (@PAD(2, ${hour}))
+        print -n "${hour_str}"
+
+        var startTime = "${dataYear}-${dataMonth}-${dataDay}T${hour_str}:00:00Z"
+        var endTime = "${dataYear}-${dataMonth}-${dataDay}T${hour_str}:59:59Z"
+        var hourlyJSON = "${JSON_dir}/${dataDate}_${hour_str}_morpheus_usage.json"
+        var hourlyCSV = "${CSV_dir}/${dataDate}_${hour_str}_morpheus_usage.csv"
+
+        clear http_headers
+        set http_header "Accept: application/json"
+        set http_header "Authorization: Bearer ${access_token}"
+
+        buffer billing_usage = http GET "https://${hostname}/api/billing/instances?startDate=${startTime}&endDate=${endTime}&includeTenants=true&includeMs=true"
+        if (${HTTP_STATUS_CODE} != 200) {
+            print "Server response was ${HTTP_STATUS_CODE} (expected 200)"
+            json format {billing_usage}
+            print {billing_usage}
+            terminate
+        }
+        save {billing_usage} as ${hourlyJSON}
+
+        # Create the CSV file and headers
+        csv "instance_usage" = ${hourlyCSV}
+        csv add_headers "instance_usage" zoneName instanceName instanceId instanceUUID refType refUUID units createdByUser siteName siteUUID siteCode status morpheus_environment_tag servicePlanId servicePlanName numUnits currency startDate endDate type pricePerUnit quantityUsed
+        csv fix_headers "instance_usage"
+
+        # Walk JSON and extract records
+        foreach $JSON{billing_usage}.[billingInfo].[instances] as this_instance {
+            foreach $JSON(this_instance).[containers] as this_container {
+                foreach $JSON(this_container).[usages] as this_usage {
+                    foreach $JSON(this_usage).[applicablePrices] as this_prices {
+                        foreach $JSON(this_usage).[pricesUsed] as this_resource {
+
+                            csv write_field "instance_usage" $JSON(this_usage).[zoneName]
+                            csv write_field "instance_usage" $JSON(this_instance).[name]
+                            csv write_field "instance_usage" $JSON(this_instance).[instanceId]
+                            csv write_field "instance_usage" $JSON(this_instance).[instanceUUID]
+                            csv write_field "instance_usage" $JSON(this_container).[refType]
+                            csv write_field "instance_usage" $JSON(this_container).[refUUID]
+                            csv write_field "instance_usage" $JSON(this_container).[unit]
+                            csv write_field "instance_usage" $JSON(this_usage).[createdByUser]
+                            csv write_field "instance_usage" $JSON(this_usage).[siteName]
+                            csv write_field "instance_usage" $JSON(this_usage).[siteUUID]
+                            csv write_field "instance_usage" $JSON(this_usage).[siteCode]
+                            csv write_field "instance_usage" $JSON(this_usage).[status]
+
+                            var morpheus_environment = "Unknown"
+                            foreach $JSON(this_usage).[tags] as this_tag {
+                                var tag_name = $JSON(this_tag).[name]
+                                if ("${tag_name}" == "Morpheus Environment") {
+                                    var morpheus_environment = $JSON(this_tag).[value]
+                                    exit_loop
+                                }
+                            }
+                            csv write_field "instance_usage" "${morpheus_environment}"
+                            csv write_field "instance_usage" $JSON(this_usage).[servicePlanId]
+                            csv write_field "instance_usage" $JSON(this_usage).[servicePlanName]
+                            csv write_field "instance_usage" $JSON(this_prices).[numUnits]
+                            csv write_field "instance_usage" $JSON(this_prices).[currency]
+                            csv write_field "instance_usage" $JSON(this_container).[startDate]
+                            csv write_field "instance_usage" $JSON(this_container).[endDate]
+                            csv write_field "instance_usage" $JSON(this_resource).[type]
+                            csv write_field "instance_usage" $JSON(this_resource).[pricePerUnit]
+                            csv write_field "instance_usage" $JSON(this_resource).[quantity]
+                        }
+                    }
+                }
+            }
+        }
+
+        csv close "instance_usage"
+        discard {billing_usage}
+        var hour = (${hour}+1)
+    }
+    print " "
+
+    var dataDate = (@DATEADD(${dataDate}, 1))
+}
+
+print "Extractor execution completed!"
+
+
+# ==== subroutines === 
+subroutine check_date {
+    match date "^([0-9]{8})$" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Error: the provided argument is not in yyyyMMdd format
+        terminate with error
+    }
+}
