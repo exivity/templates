@@ -1,0 +1,201 @@
+#==================== Introduction ====================#
+#
+#  This is a template Extractor for Morpheus 
+#  Currently this Extractor only obtains instance usage.
+#
+#  Ensure to provide the following:
+#
+#  - hostname
+#  - username
+#  - password
+#
+#  When extending this Extractor, be sure to checkout
+#  the  Morpheus billing API documentation at:
+#  http://bertramdev.github.io/morpheus-apidoc/#billing
+#
+#==================== Introduction ====================#
+#====================== Validation ======================#
+# Check if we have two parameters (from and to date)
+if (${ARGC} != 2)
+{
+    print This requires 2 argument, the day to collect usage for, and the date following that day, both in yyyyMMdd format
+    terminate with error
+} else {
+    var from_date = ${ARG_1}
+    var to_date = ${ARG_2}
+}
+# Validate the date formats
+gosub check_date(${from_date})
+gosub check_date(${to_date})
+var date_counter = (@DATEDIFF(${to_date},${from_date}))
+var date_counter = (${date_counter}+1)
+var dataDate = ${from_date}
+# ========================================================
+#     This subroutine checks that its argument
+#     is an 8 digit decimal number
+# ========================================================
+subroutine check_date {
+    # Validate the format
+    match date "^([0-9]{8})$" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Error: the provided argument is not in yyyyMMdd format
+        terminate with error
+    }
+}
+#====================== Validation ======================#
+# Hostname of the Morhpheys server and API
+public var hostname = "morpheus.environment.io"
+# The client ID to use when interfacing with the Morpheus API
+public var client_id = "morph-api"
+# Default port is 443 for API
+public var port = "443"
+# Morpheus user with access to billing API endpoint 
+public var username = "test@exivity.com"
+# Password for the user above
+public var password = "password"
+# The API also provides information for computeServers, loadBalancers, virtualImages, snapshots
+loglevel 0
+var JSON_dir = "system/extracted/morpheus/JSON"
+var CSV_dir = "system/extracted/morpheus"
+var authJSON = "${JSON_dir}/auth.json"
+set http_secure no
+#
+#=================  End Configuration ==================#
+clear http_headers
+#/ Get an token  
+print "Getting Morpheus token ..."
+# Set up the HTTP request parameters
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_body data "username=${username}&password=${password}"
+set http_savefile "${authJSON}"
+buffer token = http POST "https://${hostname}:${port}/oauth/token?grant_type=password&scope=read&client_id=${client_id}"
+if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format {token} 
+        print {token}
+        terminate
+}
+print "Succesfully authenticated!"
+# Create a variable called ${access_token} from the auth token in {token}
+var access_token = "$JSON{token}.[access_token]"
+#print "access token is ${access_token}"
+discard {token}
+print Obtaining billing data ....
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+set http_header "Authorization: Bearer ${access_token}"
+print Getting data for: ${date_counter}
+loop extract_days ${date_counter} {
+        
+        # determine date values
+        var dataYear = (@SUBSTR(${dataDate}, 0, 4))
+        var dataMonth = (@SUBSTR(${dataDate}, 5, 2))
+        var dataDay = (@SUBSTR(${dataDate}, 7, 2))
+        print datadate: ${dataDate}
+        # obtain date for next day
+        var nextDate = (@DATEADD(${dataDate}, 1))
+        var nextYear = (@SUBSTR(${nextDate}, 0, 4))
+        var nextMonth = (@SUBSTR(${nextDate}, 5, 2))
+        var nextDay = (@SUBSTR(${nextDate}, 7, 2))
+        
+        # set export file
+        var export_file = "${CSV_dir}/${dataDate}_morpheus_usage.csv"
+        var usageJSON = "${JSON_dir}/${dataDate}_morpheus_usage.json"
+
+        buffer tenant = http GET "https://${hostname}/api/accounts"
+        if (${HTTP_STATUS_CODE} != 200) {
+        print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        print The server response was:
+        json format {tenant} 
+        print Exiting
+        terminate
+        }
+
+        csv "instance_usage" = ${export_file}
+        csv add_headers "instance_usage" tenant_id tenant_name zoneName zoneUUID instance_name instanceUUID refType refUUID currency
+        csv add_headers "instance_usage" containerName createdByUser siteName siteUUID siteCode status servicePlanId servicePlanName instanceType instanceLayout hourlyPrice hourlyCost numUnits type pricePerUnit quantity
+        csv fix_headers "instance_usage" 
+
+        foreach $JSON{tenant}.[accounts] as this_account
+        {
+        var tenant_id = $JSON(this_account).[id]
+        print Extracting data for tenant: ${tenant_id}
+
+        # execute the request
+        set http_savefile ${usageJSON}
+        buffer account_usage = http GET "https://${hostname}/api/billing/account/${tenant_id}?startDate=${dataYear}-${dataMonth}-${dataDay}T00:00:00Z&&endDate=${nextYear}-${nextMonth}-${nextDay}T00:00:00Z"
+                
+        if (${HTTP_STATUS_CODE} != 200) {
+        print Server response was ${HTTP_STATUS_CODE} (expected 200)
+        print The server response was:
+        json format {account_usage} 
+        print Exiting
+        terminate
+        }
+
+
+        foreach $JSON{account_usage}.[billingInfo].[zones] as this_zone
+        {
+                foreach $JSON(this_zone).[instances].[instances] as this_instance
+                {
+                        
+                        foreach $JSON(this_instance).[containers] as this_container
+                        {
+                                foreach $JSON(this_container).[usages] as this_usage
+                                {
+                                	    foreach $JSON(this_usage).[applicablePrices] as this_prices
+                                                {       
+                                                        foreach $JSON(this_prices).[prices] as this_resource
+                                                        {
+                                                        # tenant details
+                                                        csv write_field instance_usage ${tenant_id}
+                                                        csv write_field instance_usage $JSON(this_account).[name]
+                                                        # zone details
+                                                        csv write_field instance_usage $JSON(this_zone).[zoneName] # Cloud provider
+                                                        csv write_field instance_usage $JSON(this_zone).[zoneUUID]
+                                                        # instance details
+                                                        csv write_field instance_usage $JSON(this_instance).[name]
+                                                        csv write_field instance_usage $JSON(this_instance).[instanceUUID]
+                                                        # container details
+                                                        csv write_field instance_usage $JSON(this_container).[refType]
+                                                        csv write_field instance_usage $JSON(this_container).[refUUID]
+                                                        csv write_field instance_usage $JSON(this_container).[currency]
+                                                        # usage details
+                                                        csv write_field instance_usage $JSON(this_usage).[name]
+                                                        csv write_field instance_usage $JSON(this_usage).[createdByUser]
+                                                        csv write_field instance_usage $JSON(this_usage).[siteName]
+                                                        csv write_field instance_usage $JSON(this_usage).[siteUUID]
+                                                        csv write_field instance_usage $JSON(this_usage).[siteCode]
+                                                        csv write_field instance_usage $JSON(this_usage).[status]
+                                                        csv write_field instance_usage $JSON(this_usage).[servicePlanId]
+                                                        csv write_field instance_usage $JSON(this_usage).[servicePlanName]
+                                                        csv write_field instance_usage $JSON(this_usage).[instanceType]
+                                                        csv write_field instance_usage $JSON(this_usage).[instanceLayout]
+                                                        csv write_field instance_usage $JSON(this_usage).[hourlyPrice]
+                                                        csv write_field instance_usage $JSON(this_usage).[hourlyCost]
+                                                        # applicablePrices details
+                                                        csv write_field instance_usage $JSON(this_prices).[numUnits]
+                                                        # resource prices and quantities
+                                                        csv write_field instance_usage $JSON(this_resource).[type]
+                                                        csv write_field instance_usage $JSON(this_resource).[pricePerUnit]
+                                                        csv write_field instance_usage $JSON(this_resource).[quantity]
+                                                        }
+                                         }                                       
+                                                
+                                }
+                        }
+                }
+        }
+
+
+        }
+        
+
+
+        csv close instance_usage
+        var dataDate = ${nextDate}
+}
+
+print Extractor execution completed!
