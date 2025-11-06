@@ -1,0 +1,178 @@
+# Exivity Workflow Manager
+#
+# This script automates the execution of Exivity workflows across a date range.
+# It connects to the Exivity API, triggers a specified workflow for each date
+# in the given range, and monitors the execution status until completion.
+#
+# Key Features:
+# - Executes workflows for single dates or date ranges
+# - Polls workflow status and waits for completion
+# - Handles authentication via username/password
+# - Provides detailed logging and error handling
+#
+# Usage:
+#   Execute with 1 argument for a single date: 20231201
+#   Execute with 2 arguments for a date range: 20231201 20231205
+#
+# Configuration Required:
+# - exivity_host: Your Exivity instance hostname
+# - username: API username
+# - password: API password (can be encrypted)
+# - workflow_id: ID of the workflow to execute
+#
+# Date format: YYYYMMDD
+#
+
+# Validate and initialize dates
+gosub initialise()
+
+# Configuration
+public var exivity_host = "YOUR_EXIVITY_HOST"
+public var username = "YOUR_USERNAME"
+public var password = "YOUR_PASSWORD"
+public var secure_ssl = "yes"
+# id of the workflow that should be executed
+public var workflow_id = "YOUR_WORKFLOW_ID"
+# milliseconds to wait between polling intervals
+public var polling_interval = "60000"
+set http_retry_count 10
+set http_retry_delay 10000
+set http_secure ${secure_ssl}
+
+
+# Loop over date range
+var current_date = ${from_date}
+loop daterange {
+    if (${current_date} > ${to_date}) {
+        exit_loop
+    }
+    # authenticate against the API
+    gosub authenticate()
+    # api expects date format with hyphens
+    match year "^([0-9]{4})[0-9]{4}" ${current_date}
+    var year = ${year.RESULT}
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${current_date}
+    var month = ${month.RESULT}
+    match day "^[0-9]{6}([0-9]{2})" ${current_date}
+    var day = ${day.RESULT}
+    var run_date = "${year}-${month}-${day}"
+
+    # Trigger workflow using v2 endpoint
+    print "Triggering workflow for ${current_date}..."
+    clear http_headers
+    set http_header "Accept: application/json"
+    set http_header "Content-Type: application/json"
+    set http_header "Authorization: Bearer ${access_token}"
+
+    buffer wfresp = http POST "https://${exivity_host}/v1/workflows/${workflow_id}/run?date=${run_date}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format {wfresp}
+        print {wfresp}
+        terminate with error
+    }
+
+    # Retrieve the latest workflow run for this workflow and date
+    # (Assumes the most recent run is the one just triggered)
+    buffer runresp = http GET "https://${exivity_host}/v2/workflowruns?filter[workflow.id]==${workflow_id}&sort=-start_date&page[offset]=0&page[limit]=1&include=workflow"
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format {runresp}
+        print {runresp}
+        terminate with error
+    }
+
+    # fetch the run ID
+    foreach $JSON{runresp}.[data] as this_run {
+        var run_id = $JSON(this_run).[id]
+    }
+    if ("${run_id}" == "") {
+        print "Could not extract workflow run ID from response."
+        terminate with error
+    }
+    print "Workflow run ID: ${run_id}"
+
+    # Poll for status using loop
+    var status = "started"
+    print "Waiting for workflow to finish ..." 
+    loop pollstatus { # Arbitrary large number, will exit when status is not started/pending
+        #print "Waiting 60 seconds before polling status..."
+        pause ${polling_interval}  # 60,000 milliseconds = 60 seconds
+        #gosub authenticate()
+        buffer statusresp = http GET "https://${exivity_host}/v2/workflowruns/${run_id}"
+        if (${HTTP_STATUS_CODE} != 200) {
+            print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+            print The server response was:
+            json format {statusresp}
+            print {statusresp}
+            terminate with error
+        }
+        var status = $JSON{statusresp}.[data].[attributes].[status]
+        #print "Current status: ${status}"
+        if (("${status}" != "started") && ("${status}" != "pending")) {
+            exit_loop
+        }
+    }
+    if ("${status}" != "success") {
+        print "Workflow run failed or did not complete successfully for ${current_date}."
+        terminate with error
+    }
+    print "Workflow for ${current_date} completed successfully."
+    var current_date = (@DATEADD(${current_date}, 1))
+}
+
+print "All workflow runs completed successfully."
+terminate
+
+subroutine initialise {
+    if (${ARGC} < 1 || ${ARGC} > 2) {
+        print "This requires 1 or 2 arguments in yyyyMMdd format:"
+        print "1 (required): The first day of the period"
+        print "2 (optional): The last day of the period"
+        terminate with error
+    }
+    if (${ARGC} == 1) {
+        var from_date = ${ARG_1}
+        var to_date = ${ARG_1}
+    }
+    if (${ARGC} == 2) {
+        var from_date = ${ARG_1}
+        var to_date = ${ARG_2}
+    }
+    if (${from_date} > ${to_date}) {
+        print "Invalid date range ('from' date is later than 'to' date)"
+        terminate with error
+    }
+    match date "^([0-9]{8})$" ${from_date}
+    if (${date.STATUS} != MATCH) {
+        print Error: The 'from' date argument (${from_date}) is not in YYYYMMDD format
+        terminate with error
+    }
+    if ("${from_date}" != "${to_date}") {
+        match date "^([0-9]{8})$" ${to_date}
+        if (${date.STATUS} != MATCH) {
+            print Error: The 'to' date argument (${to_date}) is not in YYYYMMDD format
+            terminate with error
+        }
+    }
+}
+
+subroutine authenticate {
+    # Authenticate
+    clear http_headers
+    set http_header "Accept: application/json"
+    set http_header "Content-Type: application/x-www-form-urlencoded"
+    set http_body data "username=${username}&password=${password}"
+    buffer token = http POST "https://${exivity_host}/v1/auth/token?app="
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE}, expected a status of 200
+        print The server response was:
+        json format {token}
+        print {token}
+        terminate with error
+    }
+    var access_token = "$JSON{token}.[token]"
+    discard {token}
+}
