@@ -1,170 +1,345 @@
-option loglevel = DEBUGX
+option loglevel = INFO
 option overwrite = NO
-#option embed = YES
 
-# Import usage from vCloud extracts
-#AdminVm
-# vCPUS
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias vcpus options {
-    pattern enabled
-    ignore "RamMB" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "vmVAppName" "vmVAppId" "guestOs" "vmNetworkName" "vmCatalogName" "vmHostName" "storageProfileName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
-    #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
-    filter (([power_state] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+# =====================================================================
+# vCloud (vCD 10.6 / API 38.1) transformer for the AdminVM extractor.
+#
+# The extractor produces TWO CSV files per run:
+#   - <stamp>_vCloud_VMs.csv      : one row per VM (adminVM query)
+#   - <stamp>_vCloud_VmDisks.csv  : one row per (VM, independent disk)
+#                                   (vmDiskRelation query - usually
+#                                   empty unless customers use
+#                                   named/independent disks)
+#
+# <stamp> depends on the extractor's `granularity` setting:
+#   daily   -> YYYYMMDD             (one file per day)
+#   hourly  -> YYYYMMDD_HH          (24 files per day)
+#
+# Granularity must match the extractor (see `var granularity` below).
+#
+# How hourly works:
+#   - Each import uses `filename_column enabled` so every row carries
+#     EXIVITY_FILE_NAME, e.g. "20260520_14_vCloud_VMs.csv".
+#   - Right after each import we extract the hour ("14" in the above)
+#     into a real `hour` column on every row using @EXTRACT_AFTER /
+#     @EXTRACT_BEFORE. This gives us a per-hour timestamp on each VM
+#     observation.
+#   - Aggregation then sums the per-hour value to a daily total
+#     (e.g. a 4-vCPU VM running 24h -> 96 vCPU-Hour for that day).
+#   - In daily mode there is one observation per VM per day, so the
+#     same aggregation just preserves the value (and the hour column
+#     is not created).
+#
+# Service shape per granularity:
+#
+#   daily:
+#     Usage = current value at the single daily snapshot
+#     Units = vCPU / GB / OS
+#
+#   hourly:
+#     Usage = sum across the hourly snapshots that day
+#     Units = vCPU-Hour / GB-Hour / Hour
+#
+# Internal-disk usage cannot be derived from the AdminVM record on
+# vCD 10.6 / API 38.1 (no totalStorageAllocatedMb attribute exists).
+# Only named/independent disks (vmDiskRelation) are billed here.
+# =====================================================================
+
+var granularity = "daily"   # set to "daily" or "hourly"
+var generate_services = "yes"   # set to "no" to skip finish/services and only export dataset
+
+# Filename patterns. With `pattern enabled` Exivity treats the path as
+# a regex, so we can match either a single daily file or any of the
+# hourly files for the data date.
+var vm_pattern   = "system/extracted/vmWare/adminVM/${dataDate}_vCloud_VMs\.csv"
+var disk_pattern = "system/extracted/vmWare/adminVM/${dataDate}_vCloud_VmDisks\.csv"
+if ("${granularity}" == "hourly") {
+    var vm_pattern   = "system/extracted/vmWare/adminVM/${dataDate}_[0-9]{2}_vCloud_VMs\.csv"
+    var disk_pattern = "system/extracted/vmWare/adminVM/${dataDate}_[0-9]{2}_vCloud_VmDisks\.csv"
+}
+
+# Preflight guard for daily runs: fail fast with a clear message when
+# the VM extract file for ${dataDate} does not exist.
+if ("${granularity}" == "daily") {
+    if (!@FILE_EXISTS("system/extracted/vmWare/adminVM/${dataDate}_vCloud_VMs.csv")) {
+        eventlog "No VM extract file found for ${dataDate}."
+        eventlog "Expected: system/extracted/vmWare/adminVM/${dataDate}_vCloud_VMs.csv"
+        eventlog "Check extractor schedule/date or set granularity to hourly if files are stamped YYYYMMDD_HH."
+        terminate
+    }
+}
+
+# Unit labels switch between flat (daily) and rate-style (hourly).
+var unit_vcpu  = "vCPU"
+var unit_gb    = "GB"
+var unit_os    = "OS"
+if ("${granularity}" == "hourly") {
+    var unit_vcpu  = "vCPU-Hour"
+    var unit_gb    = "GB-Hour"
+    var unit_os    = "Hour"
+}
+
+# ---------------------------------------------------------------------
+# Imports - one alias per service so we can shape each independently.
+# In hourly mode `filename_column enabled` adds EXIVITY_FILE_NAME so we
+# can derive a per-row `hour` afterwards.
+# ---------------------------------------------------------------------
+
+# vCPU
+if ("${granularity}" == "hourly") {
+    import "${vm_pattern}" source vcloud alias vcpus options {
+        pattern enabled
+        filename_column enabled
+        filter (([status] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+    }
+} else {
+    import "${vm_pattern}" source vcloud alias vcpus options {
+        pattern enabled
+        filter (([status] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+    }
 }
 
 # RAM
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias gbram options {
-    pattern enabled
-    ignore "numCPUs" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "vmVAppName" "vmVAppId" "guestOs" "vmNetworkName" "vmCatalogName" "vmHostName" "storageProfileName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
-    #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
-    filter (([power_state] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+if ("${granularity}" == "hourly") {
+    import "${vm_pattern}" source vcloud alias gbram options {
+        pattern enabled
+        filename_column enabled
+        filter (([status] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+    }
+} else {
+    import "${vm_pattern}" source vcloud alias gbram options {
+        pattern enabled
+        filter (([status] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+    }
 }
 
-# Disk
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias disk options {
-    pattern enabled
-    ignore "RamMB" "numCPUs" "vmVAppName" "vmVAppId" "guestOs" "vmNetworkName" "vmCatalogName" "vmHostName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
-    #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
-    #filter (([power_state] == "POWERED_ON"))
-    filter (([isVAppTemplate] == "false"))
-}
+# VM-level storage is NOT available on this vCD build
+# (AdminVMRecord has no totalStorageAllocatedMb attribute in API 38.1).
+# Internal disk billing would require a tenant-scoped vApp GET, which
+# returns 403 to system admins. Independent disks are still billed via
+# the vmDiskRelation pass below.
 
 # OS
-import "system/extracted/vmWare/adminVM/${dataDate}_.*\.csv" source vcloud alias os options {
-    pattern enabled
-    ignore "RamMB" "numCPUs" "HardDiskName" "HDstorageProfile" "AllocatedDiskSize" "vmVAppName" "vmVAppId" "vmNetworkName" "vmCatalogName" "vmHostName" "storageProfileName" "vcloud_id" "ipAddress" "StorageProfile" "SnapShotSize" "HDstorageProfile"
-    #filter (([power_state] == "POWERED_ON") && ([counter_id] != "284"))
-    filter (([power_state] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+if ("${granularity}" == "hourly") {
+    import "${vm_pattern}" source vcloud alias os options {
+        pattern enabled
+        filename_column enabled
+        filter (([status] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+    }
+} else {
+    import "${vm_pattern}" source vcloud alias os options {
+        pattern enabled
+        filter (([status] == "POWERED_ON") && ([isVAppTemplate] == "false"))
+    }
 }
 
-# Rates
-#import "import/lookup/vCloud_rates.csv" source vcloud alias rates # CHANGE THIS DIRECTORY/FILE TO YOUR OWN RATES
+# VM lookup table for joining org/vdc/vmName onto the disk dset.
+# We only need a single representative row per VM, so don't bother with
+# the filename column here.
+import "${vm_pattern}" source vcloud alias vmlookup options {
+    pattern enabled
+}
 
-## OS ##
+# ---------------------------------------------------------------------
+# Independent disks (vmDiskRelation).
+# In daily mode we have a single deterministic filename, so guard with
+# @FILE_EXISTS / @FILE_EMPTY (matches existing template conventions).
+# In hourly mode the import uses a regex pattern that may match zero
+# files; we attempt it with `skip_corrupted_file enabled` and gate all
+# downstream operations with @DSET_EXISTS.
+# ---------------------------------------------------------------------
+if ("${granularity}" == "daily") {
+    if (@FILE_EXISTS("system/extracted/vmWare/adminVM/${dataDate}_vCloud_VmDisks.csv")) {
+        if (!@FILE_EMPTY("system/extracted/vmWare/adminVM/${dataDate}_vCloud_VmDisks.csv")) {
+            import "${disk_pattern}" source vcloud alias inddisk options {
+                pattern enabled
+                filter ([isAttached] == "true")
+            }
+        }
+    }
+} else {
+    if (@FILE_EXISTS("${disk_pattern}")) {
+        import "${disk_pattern}" source vcloud alias inddisk options {
+            pattern enabled
+            filename_column enabled
+            skip_corrupted_file enabled
+            filter ([isAttached] == "true")
+        }
+    }
+}
+
+# Rates lookup (optional - uncomment and point at your rates file)
+#import "import/lookup/vCloud_rates.csv" source vcloud alias rates
+
+# NOTE:
+# We intentionally do not parse EXIVITY_FILE_NAME into an hour column.
+# Hourly mode is handled by importing hourly-stamped files and summing
+# usage rows; an explicit hour column is not required for aggregation.
+
+# =====================================================================
+# OS service
+#   daily:  Usage = 1 per VM (one snapshot)
+#   hourly: Usage = sum of 1-per-hour rows = hours powered on
+# =====================================================================
 default dset vcloud.os
-# Aggregating results
-aggregate vcloud.os notime vmName match org_id match org_name match
 
-# Normalise OS Values
+# Drop unlicensable OSes - keep only Windows / SUSE / Red Hat. Done
+# BEFORE aggregation so we don't waste rows.
 option overwrite = yes
-
 where ( ([guestOs] !~ /.*Windows.*/) && ([guestOs] !~ /.*SUSE.*/) && ([guestOs] !~ /.*Red Hat.*/)) {
     delete row
 }
-
 where ([guestOs] =~ /.*Windows.*/) {
     set guestOs to "Windows Lic. (VM)"
 }
-
-where ( [guestOs] =~ /.*SUSE.*/ ) {   # CHANGE THIS
+where ([guestOs] =~ /.*SUSE.*/) {
     set guestOs to "Suse Linux Lic. (VM)"
 }
-
-where ([guestOs] =~ /.*Red Hat.*/) {  # CHANGE THIS
+where ([guestOs] =~ /.*Red Hat.*/) {
     set guestOs to "RedHat Lic. (VM)"
 }
-
-# Normalising columns
 option overwrite = no
-create column Units value "OS"
+
+# Each row contributes 1 hour of OS-license usage.
+create column Usage value 1
+
+if ("${granularity}" == "hourly") {
+    aggregate vcloud.os notime vmName match vmOrgId match vmOrgName match vdcName match guestOs match Usage sum
+} else {
+    aggregate vcloud.os notime vmName match vmOrgId match vmOrgName match vdcName match guestOs match
+}
+
+create column Units value "${unit_os}"
 create column Rate value 1
 create column cogs
 create column Category value "vCloud Consumption"
 rename column vmName to instance
-create column Usage value 1
-# Creating Services
 rename column guestOs to service_name
 create column service_desc
 set service_desc as service_name
 
-## RAM ##
+# =====================================================================
+# RAM service - convert RamMB -> GB
+#   daily:  Usage = GB at the snapshot
+#   hourly: Usage = GB-Hour summed across hourly snapshots
+# =====================================================================
 default dset vcloud.gbram
-# Aggregating results
-aggregate vcloud.gbram notime vmName match org_id match org_name match
+calculate column RamGB as column RamMB / value 1024
 
-# Normalising columns
+if ("${granularity}" == "hourly") {
+    aggregate vcloud.gbram notime vmName match vmOrgId match vmOrgName match vdcName match RamGB sum
+} else {
+    aggregate vcloud.gbram notime vmName match vmOrgId match vmOrgName match vdcName match RamGB match
+}
+
 option overwrite = no
-create column Units value "GB"
+create column Units value "${unit_gb}"
 create column Rate value 1
 create column cogs
-# Converting RAM to GB
-calculate column RamGB as column RamMB / value 1024
 rename column RamGB to Usage
 create column Category value "vCloud Consumption"
 rename column vmName to instance
-# Creating Services
-create column service_name value "RAM (GB)"
+create column service_name value "RAM (${unit_gb})"
 create column service_desc
 set service_desc as service_name
 
-## VCPUS ##
+# =====================================================================
+# vCPU service
+# =====================================================================
 default dset vcloud.vcpus
-# Aggregating results
-aggregate vcloud.vcpus notime vmName match org_id match org_name match
 
-# Normalising columns
+if ("${granularity}" == "hourly") {
+    aggregate vcloud.vcpus notime vmName match vmOrgId match vmOrgName match vdcName match numCPUs sum
+} else {
+    aggregate vcloud.vcpus notime vmName match vmOrgId match vmOrgName match vdcName match numCPUs match
+}
+
 option overwrite = no
-create column Units value "vCPU"
+create column Units value "${unit_vcpu}"
 create column Rate value 1
 create column cogs
 rename column numCPUs to Usage
 create column Category value "vCloud Consumption"
 rename column vmName to instance
-# Creating Services
 create column service_name value "vCPU"
 create column service_desc
 set service_desc as service_name
 
-## DISK ##
-default dset vcloud.disk
-# Aggregating results
-aggregate vcloud.disk notime vmName match org_id match org_name match AllocatedDiskSize sum
+# =====================================================================
+# VM Storage service - built from vmDiskRelation rows.
+# This sums attached disk size per VM (GB / GB-Hour).
+# =====================================================================
+if (@DSET_EXISTS(vcloud.inddisk)) {
+    if (!@DSET_EMPTY(vcloud.inddisk)) {
+        default dset vcloud.inddisk
 
-# Normalising columns
-option overwrite = no
-create column Units value "GB"
-create column Rate value 1
-create column cogs
-rename column AllocatedDiskSize to Usage
-create column Category value "vCloud Consumption"
-create mergedcolumn instance separator "-" from vmName HardDiskName
-# Creating Services
-create column service_name value "Disk (GB)"
-create column service_desc
-set service_desc as service_name
+        # Pull VM context onto each disk row using the VM href as the key.
+        correlate vmRef using virtualMachineId assuming vcloud.vmlookup with vmName vmOrgId vmOrgName vdcName
 
-# Appending datasets
+        # Drop disk rows where we couldn't resolve the parent VM (orphan disks).
+        where ([vmName] == "EXIVITY_NOT_FOUND") {
+            delete row
+        }
+
+        calculate column DiskGB as column sizeMb / value 1024
+
+        if ("${granularity}" == "hourly") {
+            aggregate vcloud.inddisk notime vmName match vmOrgId match vmOrgName match vdcName match DiskGB sum
+        } else {
+            aggregate vcloud.inddisk notime vmName match vmOrgId match vmOrgName match vdcName match DiskGB sum
+        }
+
+        option overwrite = no
+        create column Units value "${unit_gb}"
+        create column Rate value 1
+        create column cogs
+        rename column DiskGB to Usage
+        create column Category value "vCloud Consumption"
+        rename column vmName to instance
+        create column service_name value "VM Storage (${unit_gb})"
+        create column service_desc
+        set service_desc as service_name
+    }
+}
+
+# =====================================================================
+# Append everything into one final dset.
+# =====================================================================
 rename dset vcloud.gbram to vcloud.final
 default dset vcloud.final
 append vcloud.os to vcloud.final
 append vcloud.vcpus to vcloud.final
-append vcloud.disk to vcloud.final
+if (@DSET_EXISTS(vcloud.inddisk)) {
+    append vcloud.inddisk to vcloud.final
+}
 
-# Correlating service rates
-#default dset vcloud.final
+# Optional rate correlation
 #correlate Rate using service_name assuming vcloud.rates
 set cogs as Rate
 
-#delete unnecesary columns
-delete columns org_id VirtualMachineId RamMB isVAppTemplate vdcHref vmName storageProfileName HardDiskName power_state EXIVITY_AGGR_COUNT
+# Tidy up - drop columns we no longer need for reporting. EXIVITY_FILE_NAME
+# and `hour` are only present in hourly mode but `delete columns` is
+# idempotent for already-absent columns, so the same line works for both.
+delete columns vmOrgId virtualMachineId RamMB isVAppTemplate vdcHref vmName storageProfileName status sizeMb diskName diskRef vmRef vdcRef isAttached storageProfileRef hour EXIVITY_FILE_NAME EXIVITY_AGGR_COUNT
 
-# Export dataset
+# Export a copy alongside the RDF.
 export vcloud.final as "vCloud/Invoice/${dataDate}_Vcloud_Report"
+export vcloud.final as "Exivity/MasterInput/${dataDate}_vcloud_normalized.csv"
 
-finish
+if ("${generate_services}" == "yes") {
+    finish
 
-# option services = overwrite
-
-services {
-    effective_date = 20190101
-    service_type = automatic
-    description_col = service_name
-    category_col = Category
-    instance_col = instance
-    usages_col = service_name
-    set_rate_using = Rate
-    set_cogs_using = cogs
-    interval = monthly
-    unit_label_col = Units
-    consumption_col = Usage
+    services {
+        effective_date     = 20190101
+        service_type       = automatic
+        description_col    = service_name
+        category_col       = Category
+        instance_col       = instance
+        usages_col         = service_name
+        set_rate_using     = Rate
+        set_cogs_using     = cogs
+        interval           = monthly
+        unit_label_col     = Units
+        consumption_col    = Usage
+    }
 }

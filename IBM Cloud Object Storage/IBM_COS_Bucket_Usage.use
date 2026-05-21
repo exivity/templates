@@ -1,0 +1,172 @@
+##########################################################################################
+#
+# IBM Cloud Object Storage bucket usage extractor
+#
+# This script exports one CSV row per bucket with the calculated used bytes
+# based on ListObjectsV2 object sizes.
+#
+# Required runtime argument:
+#   1) dataDate in yyyyMMdd format
+#
+##########################################################################################
+
+if (${ARGC} == 0) {
+    print This script requires a yyyyMMdd parameter
+    terminate with error
+} else {
+    var dataDate = ${ARG_1}
+}
+
+match date "^([0-9]{8})$" ${dataDate}
+if (${date.STATUS} != MATCH) {
+    print Argument 1 error: ${dataDate} is not in yyyyMMdd format
+    terminate with error
+}
+
+match yearmonth "^([0-9]{6})[0-9]{2}" ${dataDate}
+if (${yearmonth.STATUS} != MATCH) {
+    print Could not extract year and month from the supplied date (${dataDate})
+    terminate with error
+} else {
+    var yearmonth = ${yearmonth.RESULT}
+}
+
+# Customer variables (prefilled from Exivity variables)
+public var access_key = "${ibm_cos_access_key}"
+public var secret_key = "${ibm_cos_secret_key}"
+public var cos_endpoint = "${ibm_cos_endpoint}"
+
+# Owner hint for downstream attribution (for example account, enterprise, tenant, org)
+public var owner_hint = "${ibm_cos_owner_hint}"
+
+# Script defaults
+var AWS_Region = "us-standard"
+var AWS_Service = "s3"
+var save_path = "system/extracted/ibm_cos/${yearmonth}"
+var export_file = "${save_path}/${dataDate}_ibm_cos_bucket_usage.csv"
+var hashed_empty_string = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+csv "ibm_cos_bucket_usage" = "${export_file}"
+csv add_headers "ibm_cos_bucket_usage" dataDate ownerHint ownerId ownerDisplayName bucketName objectCount usedBytes
+csv fix_headers "ibm_cos_bucket_usage"
+
+# List buckets
+clear http_headers
+var list_date = "${OSI_TIME_UTC}"
+var list_host = "${cos_endpoint}"
+var list_query_params
+var list_canonical_headers = "host:${list_host}${NEWLINE}x-amz-content-sha256:${hashed_empty_string}${NEWLINE}x-amz-date:${list_date}${NEWLINE}"
+var list_signed_headers = "host;x-amz-content-sha256;x-amz-date"
+var list_canonical_request = "GET${NEWLINE}/${NEWLINE}${list_query_params}${NEWLINE}${list_canonical_headers}${NEWLINE}${list_signed_headers}${NEWLINE}${hashed_empty_string}"
+hash sha256 list_canonical_request as list_hashed_canonical_request
+match list_yyyymmdd "(.{8})" ${list_date}
+var list_yyyymmdd = "${list_yyyymmdd.RESULT}"
+var list_string_to_sign = "AWS4-HMAC-SHA256${NEWLINE}${list_date}${NEWLINE}${list_yyyymmdd}/${AWS_Region}/${AWS_Service}/aws4_request${NEWLINE}${list_hashed_canonical_request}"
+var list_signature = "${list_string_to_sign}"
+AWS_sign_string list_signature using ${secret_key} ${list_yyyymmdd} ${AWS_Region} ${AWS_Service}
+var list_credential_scope = "${list_yyyymmdd}/${AWS_Region}/${AWS_Service}/aws4_request"
+var list_auth_header = "Authorization: AWS4-HMAC-SHA256 Credential=${access_key}/${list_credential_scope}, SignedHeaders=${list_signed_headers}, Signature=${list_signature}"
+set http_header ${list_auth_header}
+set http_header "x-amz-date: ${list_date}"
+set http_header "x-amz-content-sha256: ${hashed_empty_string}"
+set http_header "host: ${list_host}"
+buffer list_buckets = http GET "https://${list_host}/"
+
+if (${HTTP_STATUS_CODE} != 200) {
+    print Got HTTP status ${HTTP_STATUS_CODE}, expected 200 while listing buckets
+    print {list_buckets}
+    terminate with error
+}
+
+var owner_id = $XML{list_buckets}.[ListAllMyBucketsResult].[Owner].[ID]
+var owner_display_name = $XML{list_buckets}.[ListAllMyBucketsResult].[Owner].[DisplayName]
+if ("${owner_id}" == "EXIVITY_NOT_FOUND") {
+    var owner_id = ""
+}
+if ("${owner_display_name}" == "EXIVITY_NOT_FOUND") {
+    var owner_display_name = ""
+}
+
+foreach $XML{list_buckets}.[ListAllMyBucketsResult].[Buckets].[Bucket] as this_bucket {
+    var bucket_name = $XML(this_bucket).[Name]
+    if ("${bucket_name}" == "EXIVITY_NOT_FOUND") {
+        print Skipping bucket record with missing Name
+    } else {
+        print Calculating usage for bucket ${bucket_name}
+        var bucket_object_count = 0
+        var bucket_used_bytes = 0
+        var continuation_token = ""
+        var has_more = "true"
+
+        loop pages 500 {
+            if ("${has_more}" != "true") {
+                exit_loop
+            }
+
+            if ("${continuation_token}" == "") {
+                var object_query = "list-type=2&max-keys=1000"
+            } else {
+                var object_query = "list-type=2&max-keys=1000&continuation-token=${continuation_token}"
+            }
+
+            clear http_headers
+            var object_date = "${OSI_TIME_UTC}"
+            var object_host = "${bucket_name}.${cos_endpoint}"
+            var object_canonical_headers = "host:${object_host}${NEWLINE}x-amz-content-sha256:${hashed_empty_string}${NEWLINE}x-amz-date:${object_date}${NEWLINE}"
+            var object_signed_headers = "host;x-amz-content-sha256;x-amz-date"
+            var object_canonical_request = "GET${NEWLINE}/${NEWLINE}${object_query}${NEWLINE}${object_canonical_headers}${NEWLINE}${object_signed_headers}${NEWLINE}${hashed_empty_string}"
+            hash sha256 object_canonical_request as object_hashed_canonical_request
+            match object_yyyymmdd "(.{8})" ${object_date}
+            var object_yyyymmdd = "${object_yyyymmdd.RESULT}"
+            var object_string_to_sign = "AWS4-HMAC-SHA256${NEWLINE}${object_date}${NEWLINE}${object_yyyymmdd}/${AWS_Region}/${AWS_Service}/aws4_request${NEWLINE}${object_hashed_canonical_request}"
+            var object_signature = "${object_string_to_sign}"
+            AWS_sign_string object_signature using ${secret_key} ${object_yyyymmdd} ${AWS_Region} ${AWS_Service}
+            var object_credential_scope = "${object_yyyymmdd}/${AWS_Region}/${AWS_Service}/aws4_request"
+            var object_auth_header = "Authorization: AWS4-HMAC-SHA256 Credential=${access_key}/${object_credential_scope}, SignedHeaders=${object_signed_headers}, Signature=${object_signature}"
+            set http_header ${object_auth_header}
+            set http_header "x-amz-date: ${object_date}"
+            set http_header "x-amz-content-sha256: ${hashed_empty_string}"
+            set http_header "host: ${object_host}"
+            buffer bucket_objects = http GET "https://${object_host}/?${object_query}"
+
+            if (${HTTP_STATUS_CODE} != 200) {
+                print Got HTTP status ${HTTP_STATUS_CODE}, expected 200 while listing objects for ${bucket_name}
+                print {bucket_objects}
+                terminate with error
+            }
+
+            foreach $XML{bucket_objects}.[ListBucketResult].[Contents] as this_object {
+                var size_value = $XML(this_object).[Size]
+                if ("${size_value}" != "EXIVITY_NOT_FOUND") {
+                    var bucket_used_bytes = (${bucket_used_bytes} + ${size_value})
+                    var bucket_object_count += 1
+                }
+            }
+
+            var is_truncated = $XML{bucket_objects}.[ListBucketResult].[IsTruncated]
+            if ("${is_truncated}" == "true") {
+                var next_continuation_token = $XML{bucket_objects}.[ListBucketResult].[NextContinuationToken]
+                if ("${next_continuation_token}" == "EXIVITY_NOT_FOUND") {
+                    var has_more = "false"
+                } else {
+                    var continuation_token = "${next_continuation_token}"
+                }
+            } else {
+                var has_more = "false"
+            }
+        }
+
+        csv write_field "ibm_cos_bucket_usage" ${dataDate}
+        csv write_field "ibm_cos_bucket_usage" ${owner_hint}
+        csv write_field "ibm_cos_bucket_usage" ${owner_id}
+        csv write_field "ibm_cos_bucket_usage" ${owner_display_name}
+        csv write_field "ibm_cos_bucket_usage" ${bucket_name}
+        csv write_field "ibm_cos_bucket_usage" ${bucket_object_count}
+        csv write_field "ibm_cos_bucket_usage" ${bucket_used_bytes}
+    }
+}
+
+csv close "ibm_cos_bucket_usage"
+clear http_headers
+print Done
+terminate
