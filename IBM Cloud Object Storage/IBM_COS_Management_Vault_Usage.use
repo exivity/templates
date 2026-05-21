@@ -1,0 +1,170 @@
+##########################################################################################
+# IBM COS Manager API extractor
+#
+# Supported modes:
+#   list_vaults         -> GET /manager/api/json/1.0/listVaults.adm
+#   vault_usage_report  -> GET /manager/api/json/1.0/vaultUsageReport.adm
+#
+# Date behavior:
+#   - If ARG_1 is provided, it must be yyyyMMdd.
+#   - If ARG_1 is omitted, current UTC date is used.
+##########################################################################################
+
+if (${ARGC} == 0) {
+    var dataDate = (@CURDATE("%Y%m%d"))
+} else {
+    var dataDate = ${ARG_1}
+    match date "^([0-9]{8})$" ${dataDate}
+    if (${date.STATUS} != MATCH) {
+        print Argument 1 error: ${dataDate} is not in yyyyMMdd format
+        terminate with error
+    }
+}
+
+match yearmonth "^([0-9]{6})[0-9]{2}" ${dataDate}
+if (${yearmonth.STATUS} != MATCH) {
+    print Could not extract year and month from ${dataDate}
+    terminate with error
+} else {
+    var yearmonth = ${yearmonth.RESULT}
+}
+
+# Operator/env variables
+public var extractor_mode = "list_vaults"
+public var mgmt_base_url = "${ibm_cos_mgmt_base_url}"
+public var mgmt_username = "${ibm_cos_mgmt_username}"
+public var mgmt_password = "${ibm_cos_mgmt_password}"
+public var secure_ssl = "yes"
+public var http_timeout_seconds = "60"
+
+# Vault usage report controls
+public var use_date_range = "no"
+public var report_month = "${MONTH_NAME} ${YEAR}"
+public var start_date = "01/01/2026"
+public var end_date = "01/31/2026"
+
+var save_path = "system/extracted/ibm_cos_mgmt/${yearmonth}"
+var api_root = "${mgmt_base_url}"
+match has_scheme "^(https?://).*$" ${api_root}
+if (${has_scheme.STATUS} != MATCH) {
+    var api_root = "https://${api_root}"
+}
+var api_base = "${api_root}/manager/api/json/1.0"
+
+clear http_headers
+set http_timeout ${http_timeout_seconds}
+set http_secure ${secure_ssl}
+set http_authtype basic
+set http_username ${mgmt_username}
+set http_password ${mgmt_password}
+set http_header "accept: application/json"
+set http_header "Content-Type: application/x-www-form-urlencoded"
+
+if ("${extractor_mode}" == "list_vaults") {
+    var raw_file = "${save_path}/${dataDate}_ibm_cos_list_vaults_raw.json"
+    var csv_file = "${save_path}/${dataDate}_ibm_cos_inventory.csv"
+    set http_savefile "${raw_file}"
+    buffer api_response = http GET "${api_base}/listVaults.adm"
+
+    if (${HTTP_STATUS_CODE} != 200) {
+        print listVaults request failed with HTTP status ${HTTP_STATUS_CODE}
+        print {api_response}
+        terminate with error
+    }
+
+    csv "ibm_cos_inventory" = "${csv_file}"
+    csv add_headers "ibm_cos_inventory" dataDate vaultId vaultUuid vaultName description storagePool usedBytes
+    csv fix_headers "ibm_cos_inventory"
+
+    foreach $JSON{api_response}.[responseData].[vaults] as vault_record {
+        var vault_id = $JSON(vault_record).[id]
+        var vault_uuid = $JSON(vault_record).[uuid]
+        var vault_name = $JSON(vault_record).[name]
+        var description = $JSON(vault_record).[description]
+        var used_bytes = $JSON(vault_record).[usedLogicalSizeFromStorage]
+        var storage_pool = ""
+        var pool_probe = $JSON(vault_record).[storagePools].[0].[storagePool].[name]
+        if ("${pool_probe}" != "EXIVITY_NOT_FOUND") {
+            var storage_pool = "${pool_probe}"
+        }
+
+        if ("${vault_id}" == "EXIVITY_NOT_FOUND") {
+            var vault_id = ""
+        }
+        if ("${vault_uuid}" == "EXIVITY_NOT_FOUND") {
+            var vault_uuid = ""
+        }
+        if ("${vault_name}" == "EXIVITY_NOT_FOUND") {
+            var vault_name = ""
+        }
+        if ("${description}" == "EXIVITY_NOT_FOUND") {
+            var description = ""
+        }
+        if ("${storage_pool}" == "EXIVITY_NOT_FOUND") {
+            var storage_pool = ""
+        }
+        if ("${used_bytes}" == "EXIVITY_NOT_FOUND") {
+            var used_bytes = 0
+        }
+
+        csv write_field "ibm_cos_inventory" ${dataDate}
+        csv write_field "ibm_cos_inventory" ${vault_id}
+        csv write_field "ibm_cos_inventory" ${vault_uuid}
+        csv write_field "ibm_cos_inventory" ${vault_name}
+        csv write_field "ibm_cos_inventory" ${description}
+        csv write_field "ibm_cos_inventory" ${storage_pool}
+        csv write_field "ibm_cos_inventory" ${used_bytes}
+    }
+
+    csv close "ibm_cos_inventory"
+    print listVaults completed. Raw JSON: ${raw_file}
+    terminate
+}
+
+if ("${extractor_mode}" == "vault_usage_report") {
+    var raw_file = "${save_path}/${dataDate}_ibm_cos_vault_usage_raw.json"
+    var csv_file = "${save_path}/${dataDate}_ibm_cos_vault_usage.csv"
+    if ("${use_date_range}" == "yes") {
+        var usage_url = "${api_base}/vaultUsageReport.adm?dateRange=true&startDate=${start_date}&endDate=${end_date}"
+    } else {
+        var usage_url = "${api_base}/vaultUsageReport.adm?dateRange=false&month=${report_month}"
+    }
+    set http_savefile "${raw_file}"
+    buffer api_response = http GET "${usage_url}"
+
+    if (${HTTP_STATUS_CODE} != 200) {
+        print vaultUsageReport request failed with HTTP status ${HTTP_STATUS_CODE}
+        print {api_response}
+        terminate with error
+    }
+
+    csv "ibm_cos_vault_usage" = "${csv_file}"
+    csv add_headers "ibm_cos_vault_usage" dataDate vaultId vaultName usageDate usedBytes
+    csv fix_headers "ibm_cos_vault_usage"
+
+    foreach $JSON{api_response}.[responseData] as usage_record {
+        var vault_id = $JSON(usage_record).[vaultId]
+        var vault_name = $JSON(usage_record).[vaultName]
+        var usage_date = $JSON(usage_record).[date]
+        var used_bytes = $JSON(usage_record).[used]
+
+        if ("${vault_id}" == "EXIVITY_NOT_FOUND") { var vault_id = "" }
+        if ("${vault_name}" == "EXIVITY_NOT_FOUND") { var vault_name = "" }
+        if ("${usage_date}" == "EXIVITY_NOT_FOUND") { var usage_date = "" }
+        if ("${used_bytes}" == "EXIVITY_NOT_FOUND") { var used_bytes = 0 }
+
+        csv write_field "ibm_cos_vault_usage" ${dataDate}
+        csv write_field "ibm_cos_vault_usage" ${vault_id}
+        csv write_field "ibm_cos_vault_usage" ${vault_name}
+        csv write_field "ibm_cos_vault_usage" ${usage_date}
+        csv write_field "ibm_cos_vault_usage" ${used_bytes}
+    }
+
+    csv close "ibm_cos_vault_usage"
+    print vaultUsageReport completed. Raw JSON: ${raw_file}
+    terminate
+}
+
+print Unsupported extractor_mode: ${extractor_mode}
+print Supported values: list_vaults, vault_usage_report
+terminate with error
