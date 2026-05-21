@@ -1,0 +1,107 @@
+option loglevel = INFO
+option overwrite = NO
+
+# Master transformer that consolidates normalized vendor datasets.
+# Inputs are expected from vendor transformers that export intermediate
+# datasets into Exivity/MasterInput.
+
+var generate_services = "yes"   # set to "no" to export only
+
+import "Exivity/MasterInput/${dataDate}_vcloud_normalized.*" source master alias vcloud options {
+    pattern enabled
+}
+
+import "Exivity/MasterInput/${dataDate}_nutanix_normalized.*" source master alias nutanix options {
+    pattern enabled
+}
+
+# -------------------------------
+# vCloud -> common schema
+# -------------------------------
+default dset master.vcloud
+create column source_vendor value "vCloud"
+create column usage_date value "${dataDate}"
+create column tenant_id
+set tenant_id as [vmOrgId]
+create column tenant_name
+set tenant_name as [vmOrgName]
+create column location
+set location as [vdcName]
+create column resource_id
+set resource_id as [instance]
+create column resource_name
+set resource_name as [instance]
+create column metric_name
+set metric_name as [service_name]
+create column usage_quantity
+set usage_quantity as [Usage]
+create column usage_unit
+set usage_unit as [Units]
+create column price_rate
+set price_rate as [Rate]
+create column cost_amount
+set cost_amount as [cogs]
+create column usage_category
+set usage_category as [Category]
+create column metric_description
+set metric_description as [service_desc]
+delete columns vmOrgId vmOrgName vdcName instance service_name Usage Units Rate cogs Category service_desc
+
+# -------------------------------
+# Nutanix -> common schema
+# -------------------------------
+default dset master.nutanix
+create column source_vendor value "Nutanix"
+create column usage_date value "${dataDate}"
+create column tenant_id
+set tenant_id as [cluster_uuid]
+create column tenant_name
+set tenant_name as [cluster_name]
+create column location
+set location as [cluster_name]
+create column resource_id
+set resource_id as [instance]
+create column resource_name
+set resource_name as [instance]
+create column metric_name
+set metric_name as [service_name]
+create column usage_quantity
+set usage_quantity as [quantity]
+create column usage_unit
+set usage_unit as [units]
+create column price_rate
+set price_rate as [rate]
+create column cost_amount
+set cost_amount as [cogs]
+create column usage_category
+set usage_category as [category]
+create column metric_description
+set metric_description as [service_desc]
+delete columns cluster_uuid cluster_name instance service_name quantity units rate cogs category service_desc
+
+# -------------------------------
+# Consolidated dataset
+# -------------------------------
+rename dset master.vcloud to master.final
+default dset master.final
+append master.nutanix to master.final
+
+export master.final as "Exivity/MasterOutput/${dataDate}_master_consumption.csv"
+
+if ("${generate_services}" == "yes") {
+    finish
+
+    services {
+        effective_date     = 20240101
+        service_type       = automatic
+        description_col    = metric_name
+        category_col       = usage_category
+        instance_col       = resource_name
+        usages_col         = metric_name
+        set_rate_using     = price_rate
+        set_cogs_using     = cost_amount
+        interval           = monthly
+        unit_label_col     = usage_unit
+        consumption_col    = usage_quantity
+    }
+}

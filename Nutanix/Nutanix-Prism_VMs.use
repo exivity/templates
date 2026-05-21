@@ -1,0 +1,206 @@
+# Nutanix-Prism_VMs.use
+# -----------------------------------------------------------------------------
+# Extracts VM configuration (vCPU, RAM, provisioned disk) per VM from
+# Nutanix Prism Central VMM v4 REST API.
+#
+# Used storage and other runtime metrics are handled by the separate
+# Nutanix-Prism_Stats.use extractor.
+#
+# Date selection (matches the vCloud template style):
+#   no args      -> today's date (and current hour when granularity=hourly)
+#   ARG_1        -> ARG_1 is the date (yyyyMMdd), hour = current
+#   ARG_1 ARG_2  -> ARG_1 is the date, ARG_2 is the hour (HH)
+#
+# Granularity:
+#   daily   -> filename:  YYYYMMDD_<host>_Nutanix_VMs.csv     (1 file/day)
+#   hourly  -> filename:  YYYYMMDD_HH_<host>_Nutanix_VMs.csv  (1 file/hour)
+# Use "hourly" only if you actually schedule the extractor hourly,
+# otherwise the same daily file would be overwritten 24 times.
+# -----------------------------------------------------------------------------
+
+loglevel DEBUG
+
+# ---------------------------------------------------------------------------
+# Date / hour selection
+# ---------------------------------------------------------------------------
+if (${ARGC} == 0) {
+    var Date = "${YEAR}${MONTH}${DAY}"
+    var Hour = ${HOUR}
+}
+if (${ARGC} == 1) {
+    var Date = ${ARG_1}
+    var Hour = ${HOUR}
+}
+if (${ARGC} == 2) {
+    var Date = ${ARG_1}
+    var Hour = ${ARG_2}
+}
+if (${Date} == ${Hour}) {
+    var Hour = ${HOUR}
+}
+
+# Break the date into parts for nested folder paths and for the CSV
+# datadate column.
+var dataYear  = (@SUBSTR(${Date}, 1, 4))
+var dataMonth = (@SUBSTR(${Date}, 5, 2))
+var dataDay   = (@SUBSTR(${Date}, 7, 2))
+
+# ---------------------------------------------------------------------------
+# Operator-editable settings
+# ---------------------------------------------------------------------------
+# Nutanix Prism Central endpoint (IP or hostname, no scheme, no port)
+public var nutanix_endpoint = "${nutanix_host}"
+# Nutanix Prism Central port (default: 9440)
+public var nutanix_port = "9440"
+# Friendly name used in the output filename
+public var nutanix_name = "${nutanix_endpoint}"
+# Nutanix Prism Central service account API key value (the secret
+# shown only once when the key is created in PC -> IAM -> Service
+# Accounts -> Manage Keys).
+public var nutanix_api_key = "${nutanix_secret}"
+# When using self-signed or unknown SSL certificates, set to "no"
+public var secure_ssl = "no"
+# Export base directory
+public var exportdir = "system/extracted/Nutanix"
+# Page size (Prism Central V4 caps at 100)
+public var page_size = "100"
+# Extraction granularity. "daily" (default) or "hourly".
+public var granularity = "daily"
+
+# ---------------------------------------------------------------------------
+# Derived values
+# ---------------------------------------------------------------------------
+set http_secure ${secure_ssl}
+
+# Filename stem used for both VM CSV and JSON dumps.
+var stamp = "${Date}"
+if ("${granularity}" == "hourly") {
+    var stamp = "${Date}_${Hour}"
+}
+
+var httproot = "https://${nutanix_endpoint}:${nutanix_port}/api/vmm/v4.0"
+var jsonfolder = "${exportdir}/JSON"
+var vms_export_file = "${exportdir}/${dataYear}/${dataMonth}/${stamp}_${nutanix_name}_Nutanix_VMs.csv"
+
+# datadate value embedded in every CSV row (yyyy-MM-dd)
+var datadate = "${dataYear}-${dataMonth}-${dataDay}"
+
+# ---------------------------------------------------------------------------
+# CSV setup
+# ---------------------------------------------------------------------------
+csv nutanix_vms = "${vms_export_file}"
+csv add_headers nutanix_vms datadate vm_uuid vm_name cluster_uuid cluster_name power_state num_sockets num_cores_per_socket total_vcpus memory_bytes disk_provisioned_bytes
+csv fix_headers nutanix_vms
+
+# ---------------------------------------------------------------------------
+# Pagination loop over VMs (Prism Central V4 uses zero-based $page).
+# vm_paging.COUNT is auto-created by `loop` and starts at 1, so we use
+# (COUNT - 1) for the API page index.
+# ---------------------------------------------------------------------------
+var max_pages = 10000
+
+loop vm_paging "${max_pages}" {
+
+    var page = (${vm_paging.COUNT}-1)
+
+    clear http_headers
+    set http_header "Accept: application/json"
+    set http_header "X-ntnx-api-key: ${nutanix_api_key}"
+    set http_savefile "${jsonfolder}/${stamp}_vms_page${page}.json"
+    set http_timeout 900
+
+    var vms_url = "${httproot}/ahv/config/vms?$page=${page}&$limit=${page_size}"
+    buffer vms_resp = http GET "${vms_url}"
+
+    # Prism Central returns 302 when paging past the available data.
+    # Treat that as "no more pages" rather than a failure.
+    if (${HTTP_STATUS_CODE} == 302) {
+        discard {vms_resp}
+        exit_loop
+    }
+    if (${HTTP_STATUS_CODE} != 200) {
+        print "ERROR: VMs list returned HTTP ${HTTP_STATUS_CODE} for page ${page}"
+        discard {vms_resp}
+        terminate with error
+    }
+
+    var rows_on_page = 0
+
+    foreach $JSON{vms_resp}.[data] as this_vm {
+
+        var rows_on_page += 1
+
+        var vm_uuid      = $JSON(this_vm).[extId]
+        var vm_name      = $JSON(this_vm).[name]
+        var cluster_uuid = $JSON(this_vm).[cluster].[extId]
+        var cluster_name = $JSON(this_vm).[cluster].[name]
+        var power_state  = $JSON(this_vm).[powerState]
+        var sockets      = $JSON(this_vm).[numSockets]
+        var cores        = $JSON(this_vm).[numCoresPerSocket]
+        var mem_bytes    = $JSON(this_vm).[memorySizeBytes]
+
+        # Optional fields default to 0 / empty
+        if ("${sockets}" == "EXIVITY_NOT_FOUND") {
+            var sockets = 0
+        }
+        if ("${cores}" == "EXIVITY_NOT_FOUND") {
+            var cores = 0
+        }
+        if ("${mem_bytes}" == "EXIVITY_NOT_FOUND") {
+            var mem_bytes = 0
+        }
+        if ("${cluster_name}" == "EXIVITY_NOT_FOUND") {
+            var cluster_name = ""
+        }
+        if ("${cluster_uuid}" == "EXIVITY_NOT_FOUND") {
+            var cluster_uuid = ""
+        }
+        if ("${power_state}" == "EXIVITY_NOT_FOUND") {
+            var power_state = ""
+        }
+        if ("${vm_name}" == "EXIVITY_NOT_FOUND") {
+            var vm_name = ""
+        }
+
+        var total_vcpus = (${sockets}*${cores})
+
+        # Sum provisioned disk size across all disks on the VM.
+        # Some VMs have no `disks` array at all, so probe first and only
+        # iterate when the path exists -- otherwise foreach raises a
+        # "JSON path becomes invalid" fatal error.
+        var disk_provisioned = 0
+        var disks_probe = $JSON(this_vm).[disks]
+        if ("${disks_probe}" != "EXIVITY_NOT_FOUND") {
+            foreach $JSON(this_vm).[disks] as this_disk {
+                var disk_bytes = $JSON(this_disk).[backingInfo].[diskSizeBytes]
+                if ("${disk_bytes}" == "EXIVITY_NOT_FOUND") {
+                    var disk_bytes = 0
+                }
+                var disk_provisioned = (${disk_provisioned}+${disk_bytes})
+            }
+        }
+
+        csv write_field nutanix_vms "${datadate}"
+        csv write_field nutanix_vms "${vm_uuid}"
+        csv write_field nutanix_vms "${vm_name}"
+        csv write_field nutanix_vms "${cluster_uuid}"
+        csv write_field nutanix_vms "${cluster_name}"
+        csv write_field nutanix_vms "${power_state}"
+        csv write_field nutanix_vms "${sockets}"
+        csv write_field nutanix_vms "${cores}"
+        csv write_field nutanix_vms "${total_vcpus}"
+        csv write_field nutanix_vms "${mem_bytes}"
+        csv write_field nutanix_vms "${disk_provisioned}"
+    }
+
+    discard {vms_resp}
+
+    # Stop when the page returned fewer items than the page size
+    if (${rows_on_page} < ${page_size}) {
+        exit_loop
+    }
+}
+
+csv close nutanix_vms
+print "Done -- output: ${vms_export_file}"
+terminate

@@ -1,0 +1,256 @@
+# Nutanix-Prism_Stats.use
+# -----------------------------------------------------------------------------
+# Extracts per-VM performance and usage stats from Nutanix Prism Central
+# VMM v4 Stats API (/api/vmm/v4.0/ahv/stats/vms/{extId}).
+#
+# Aggregates returned per VM:
+#   - controllerUserBytes        (used storage, bytes)
+#   - hypervisorCpuUsagePpm      (CPU usage, parts-per-million)
+#   - memoryUsagePpm             (memory usage, parts-per-million)
+#
+# Date / hour selection (matches the vCloud template style):
+#   no args      -> today's date (and current hour when granularity=hourly)
+#   ARG_1        -> ARG_1 is the date (yyyyMMdd), hour = current
+#   ARG_1 ARG_2  -> ARG_1 is the date, ARG_2 is the hour (HH)
+#
+# Granularity:
+#   daily   -> stats window:  ${Date}T00:00:00 .. ${Date}T23:59:59
+#              sampling interval: 86400 (one bucket = whole day)
+#              filename:  YYYYMMDD_<host>_Nutanix_Stats.csv
+#   hourly  -> stats window:  ${Date}T${Hour}:00:00 .. ${Date}T${Hour}:59:59
+#              sampling interval: 3600 (one bucket = the whole hour)
+#              filename:  YYYYMMDD_HH_<host>_Nutanix_Stats.csv
+# -----------------------------------------------------------------------------
+
+loglevel DEBUG
+
+# ---------------------------------------------------------------------------
+# Date / hour selection
+# ---------------------------------------------------------------------------
+if (${ARGC} == 0) {
+    var Date = "${YEAR}${MONTH}${DAY}"
+    var Hour = ${HOUR}
+}
+if (${ARGC} == 1) {
+    var Date = ${ARG_1}
+    var Hour = ${HOUR}
+}
+if (${ARGC} == 2) {
+    var Date = ${ARG_1}
+    var Hour = ${ARG_2}
+}
+if (${Date} == ${Hour}) {
+    var Hour = ${HOUR}
+}
+
+var dataYear  = (@SUBSTR(${Date}, 1, 4))
+var dataMonth = (@SUBSTR(${Date}, 5, 2))
+var dataDay   = (@SUBSTR(${Date}, 7, 2))
+
+# ---------------------------------------------------------------------------
+# Operator-editable settings
+# ---------------------------------------------------------------------------
+public var nutanix_endpoint = "${nutanix_host}"
+public var nutanix_port = "9440"
+public var nutanix_name = "${nutanix_endpoint}"
+# Nutanix Prism Central service account API key value (the secret
+# shown only once when the key is created in PC -> IAM -> Service
+# Accounts -> Manage Keys).
+public var nutanix_api_key = "${nutanix_secret}"
+public var secure_ssl = "no"
+public var exportdir = "system/extracted/Nutanix"
+public var page_size = "100"
+# Down-sampling operator: SUM | AVG | MIN | MAX | COUNT | LAST
+public var stat_type = "AVG"
+# Extraction granularity. "daily" (default) or "hourly".
+public var granularity = "daily"
+# Per-VM stats retry behavior for HTTP 429 (rate limiting).
+# Total attempts = stats_retry_count + 1.
+public var stats_retry_count = "5"
+# Milliseconds to wait between 429 retries.
+public var stats_retry_delay_ms = "2000"
+
+# ---------------------------------------------------------------------------
+# Derived values
+# ---------------------------------------------------------------------------
+set http_secure ${secure_ssl}
+
+# Stats time window and the file stamp depend on the granularity.
+var stamp = "${Date}"
+var start_time = "${dataYear}-${dataMonth}-${dataDay}T00:00:00.000Z"
+var end_time   = "${dataYear}-${dataMonth}-${dataDay}T23:59:59.999Z"
+var sampling_interval = "86400"
+if ("${granularity}" == "hourly") {
+    var stamp = "${Date}_${Hour}"
+    var start_time = "${dataYear}-${dataMonth}-${dataDay}T${Hour}:00:00.000Z"
+    var end_time   = "${dataYear}-${dataMonth}-${dataDay}T${Hour}:59:59.999Z"
+    var sampling_interval = "3600"
+}
+
+var httproot = "https://${nutanix_endpoint}:${nutanix_port}/api/vmm/v4.0"
+var jsonfolder = "${exportdir}/JSON"
+var stats_export_file = "${exportdir}/${dataYear}/${dataMonth}/${stamp}_${nutanix_name}_Nutanix_Stats.csv"
+
+var datadate = "${dataYear}-${dataMonth}-${dataDay}"
+
+# Pre-build the $select clause for the stats API. The vmm spec requires
+# the "stats/" prefix on each requested field.
+var stats_select = "stats/controllerUserBytes,stats/hypervisorCpuUsagePpm,stats/memoryUsagePpm"
+
+# ---------------------------------------------------------------------------
+# CSV setup
+# ---------------------------------------------------------------------------
+csv nutanix_stats = "${stats_export_file}"
+csv add_headers nutanix_stats datadate hour vm_uuid vm_name cluster_uuid controller_user_bytes hypervisor_cpu_usage_ppm memory_usage_ppm
+csv fix_headers nutanix_stats
+
+# ---------------------------------------------------------------------------
+# Page through the VM inventory to collect extIds, then for each VM call
+# the stats endpoint. Prism Central V4 uses zero-based $page.
+# vm_paging.COUNT is auto-created by `loop` and starts at 1, so we use
+# (COUNT - 1) for the API page index.
+# ---------------------------------------------------------------------------
+var max_pages = 10000
+
+loop vm_paging "${max_pages}" {
+
+    var page = (${vm_paging.COUNT}-1)
+
+    clear http_headers
+    set http_header "Accept: application/json"
+        set http_header "X-ntnx-api-key: ${nutanix_api_key}"
+    set http_savefile "${jsonfolder}/${stamp}_vms_page${page}.json"
+    set http_timeout 900
+
+    var vms_url = "${httproot}/ahv/config/vms?$page=${page}&$limit=${page_size}&$select=extId,name,cluster"
+    buffer vms_resp = http GET "${vms_url}"
+
+    # Prism Central returns 302 when paging past the available data.
+    # Treat that as "no more pages" rather than a failure.
+    if (${HTTP_STATUS_CODE} == 302) {
+        discard {vms_resp}
+        exit_loop
+    }
+    if (${HTTP_STATUS_CODE} != 200) {
+        print "ERROR: VMs list returned HTTP ${HTTP_STATUS_CODE} for page ${page}"
+        discard {vms_resp}
+        terminate with error
+    }
+
+    var rows_on_page = 0
+
+    foreach $JSON{vms_resp}.[data] as this_vm {
+
+        var rows_on_page += 1
+
+        var vm_uuid      = $JSON(this_vm).[extId]
+        var vm_name      = $JSON(this_vm).[name]
+        var cluster_uuid = $JSON(this_vm).[cluster].[extId]
+
+        if ("${cluster_uuid}" == "EXIVITY_NOT_FOUND") {
+            var cluster_uuid = ""
+        }
+        if ("${vm_name}" == "EXIVITY_NOT_FOUND") {
+            var vm_name = ""
+        }
+
+        # -------------------------------------------------------------------
+        # Per-VM stats call
+        # -------------------------------------------------------------------
+        clear http_headers
+        set http_header "Accept: application/json"
+    set http_header "X-ntnx-api-key: ${nutanix_api_key}"
+        set http_savefile "${jsonfolder}/${stamp}_stats_${vm_uuid}.json"
+        set http_timeout 300
+
+        var stats_url = "${httproot}/ahv/stats/vms/${vm_uuid}?$startTime=${start_time}&$endTime=${end_time}&$samplingInterval=${sampling_interval}&$statType=${stat_type}&$select=${stats_select}"
+        var stats_http_code = 0
+        var stats_attempts = (${stats_retry_count}+1)
+        var stats_ok = 0
+
+        loop stats_try "${stats_attempts}" {
+            buffer stats_resp = http GET "${stats_url}"
+            var stats_http_code = ${HTTP_STATUS_CODE}
+
+            if (${stats_http_code} == 200) {
+                var stats_ok = 1
+                exit_loop
+            }
+
+            # Retry only on explicit rate limiting.
+            if (${stats_http_code} != 429) {
+                exit_loop
+            }
+
+            if (${stats_try.COUNT} < ${stats_attempts}) {
+                pause ${stats_retry_delay_ms}
+            }
+        }
+
+        var user_bytes = 0
+        var cpu_ppm    = 0
+        var mem_ppm    = 0
+
+        if (${stats_ok} == 1) {
+
+            # The stats API returns data.stats as an array of samples.
+            # With a sampling interval matching the window length the
+            # array typically contains a single bucket. Walk the samples
+            # and keep the last non-empty value for each metric (works
+            # for any statType).
+            foreach $JSON{stats_resp}.[data].[stats] as this_sample {
+
+                var s_user = $JSON(this_sample).[controllerUserBytes]
+                if ("${s_user}" != "EXIVITY_NOT_FOUND") {
+                    if ("${s_user}" != "") {
+                        var user_bytes = ${s_user}
+                    }
+                }
+
+                var s_cpu = $JSON(this_sample).[hypervisorCpuUsagePpm]
+                if ("${s_cpu}" != "EXIVITY_NOT_FOUND") {
+                    if ("${s_cpu}" != "") {
+                        var cpu_ppm = ${s_cpu}
+                    }
+                }
+
+                var s_mem = $JSON(this_sample).[memoryUsagePpm]
+                if ("${s_mem}" != "EXIVITY_NOT_FOUND") {
+                    if ("${s_mem}" != "") {
+                        var mem_ppm = ${s_mem}
+                    }
+                }
+            }
+        } else {
+            print "WARN: stats for VM ${vm_uuid} returned HTTP ${stats_http_code} after ${stats_try.COUNT} attempt(s); writing zeros"
+        }
+
+        discard {stats_resp}
+
+        # Per-row hour value: empty in daily mode, HH in hourly mode.
+        # Lets the transformer disambiguate hourly observations.
+        var row_hour = ""
+        if ("${granularity}" == "hourly") {
+            var row_hour = "${Hour}"
+        }
+
+        csv write_field nutanix_stats "${datadate}"
+        csv write_field nutanix_stats "${row_hour}"
+        csv write_field nutanix_stats "${vm_uuid}"
+        csv write_field nutanix_stats "${vm_name}"
+        csv write_field nutanix_stats "${cluster_uuid}"
+        csv write_field nutanix_stats "${user_bytes}"
+        csv write_field nutanix_stats "${cpu_ppm}"
+        csv write_field nutanix_stats "${mem_ppm}"
+    }
+
+    discard {vms_resp}
+
+    if (${rows_on_page} < ${page_size}) {
+        exit_loop
+    }
+}
+
+csv close nutanix_stats
+print "Done -- output: ${stats_export_file}"
+terminate

@@ -1,74 +1,427 @@
-# Nutanix Transformer
+option loglevel = DEBUGX
+option overwrite = NO
 
-# Setup import directory (Same as export directory of the Nutanix Extractor)
-var importdir = "system/extracted/Nutanix"
+# =====================================================================
+# Nutanix Prism Central transformer.
+#
+# Consumes the two CSV outputs produced by the matching extractors:
+#   - <stamp>_<host>_Nutanix_VMs.csv     (one row per VM, configuration)
+#   - <stamp>_<host>_Nutanix_Stats.csv   (one row per VM, runtime stats)
+#
+# <stamp> depends on the extractor's `granularity` setting:
+#   daily   -> YYYYMMDD             (one file per day per host)
+#   hourly  -> YYYYMMDD_HH          (24 files per day per host)
+#
+# Granularity must match the extractor (see `var granularity` below).
+#
+# How hourly works:
+#   - Each import uses `filename_column enabled`, so every row carries
+#     EXIVITY_FILE_NAME (e.g. "20260520_14_<host>_Nutanix_VMs.csv").
+#   - Right after each import we extract the hour ("14") into a real
+#     `hour` column on every row, giving a per-hour observation.
+#   - Aggregation then sums the per-hour value to a daily total
+#     (e.g. a 4-vCPU VM running 24h -> 96 vCPU-Hour for that day).
+#   - In daily mode there is one observation per VM per day, so the
+#     same aggregation just preserves the value (and the hour column
+#     is not created).
+#
+# Service shape per granularity:
+#
+#   daily:
+#     quantity = current value at the single daily snapshot
+#     units    = vCPU / GB / %
+#
+#   hourly:
+#     quantity = sum across the hourly snapshots that day
+#     units    = vCPU-Hour / GB-Hour / %-Hour
+# =====================================================================
 
-# Import items
-import "${importdir}/${dataDate}_vms.*.csv" source nutanix alias vm  options {
-    pattern = on
-    filename_column = on
+var granularity = "daily"   # set to "daily" or "hourly"
+var generate_services = "yes"   # set to "no" to skip finish/services and only export dataset
+
+# Filename patterns. With `pattern enabled`, Exivity treats only the
+# *filename* portion as a regex -- the directory portion must be a
+# literal path. We build the directory from the always-available
+# ${dataYear} and ${dataMonth} built-ins, and use regex only to
+# wildcard the host name (and the hour, in hourly mode) in the
+# filename so the transformer works for any operator-chosen
+# `nutanix_name`.
+var vm_dir    = "system/extracted/Nutanix/${dataYear}/${dataMonth}"
+var stats_dir = "system/extracted/Nutanix/${dataYear}/${dataMonth}"
+var vm_pattern    = "${vm_dir}/${dataDate}_[^_]+_Nutanix_VMs\\.csv"
+var stats_pattern = "${stats_dir}/${dataDate}_[^_]+_Nutanix_Stats\\.csv"
+if ("${granularity}" == "hourly") {
+    var vm_pattern    = "${vm_dir}/${dataDate}_[0-9]{2}_[^_]+_Nutanix_VMs\\.csv"
+    var stats_pattern = "${stats_dir}/${dataDate}_[0-9]{2}_[^_]+_Nutanix_Stats\\.csv"
 }
 
-# Normalize items
-default dset nutanix.vm
-where ([projectname]=="EXIVITY_NOT_FOUND") {
-    set projectname to "Unknown project" 
-}
-where ([ownername]=="EXIVITY_NOT_FOUND") {
-    set ownername to "Unknown owner"
-} 
-uppercase values in columns entityid vmid ownerid projectid clusterid
-capitalise values in columns ownername projectname
-
-# Cleanup items
-default dset nutanix.vm
-rename column type to service_name
-where ([quantity] == "EXIVITY_NOT_FOUND") {
-    set quantity to 0
-} 
-where ([entityname] == [vmname]) {
-    set entityname to "VM"
-}
-rename column vmname to instance
-create column service_category value Nutanix
-aggregate nutanix.vm notime service_name match instance match vmid match projectname match instance match quantity sum
-delete columns description entityid EXIVITY_AGGR_COUNT EXIVITY_FILE_NAME
-
-# normalize memory and storage
-where ([service_name]=="mb_memory") {
-    set quantity = ([quantity]/1024)
-    set service_name to "gb_memory"
-}
-where ([service_name]=="mb_storage") {
-    set quantity = ([quantity]/1024/1024)
-    set service_name to "tb_storage"
+# Unit labels switch between flat (daily) and rate-style (hourly).
+var unit_vcpu = "vCPU"
+var unit_gb   = "GB"
+var unit_pct  = "%"
+if ("${granularity}" == "hourly") {
+    var unit_vcpu = "vCPU-Hour"
+    var unit_gb   = "GB-Hour"
+    var unit_pct  = "%-Hour"
 }
 
-# create service defaults
-create column service_key
-set service_key as service_name
-create column service_rate value 1
-create column service_cogs value 1
+# ---------------------------------------------------------------------
+# Imports - one alias per service so we can shape each independently.
+# In hourly mode `filename_column enabled` adds EXIVITY_FILE_NAME so we
+# can derive a per-row `hour` afterwards.
+# ---------------------------------------------------------------------
 
-# Export items when used in consolidation, only required when using multiple Transformers
-#export nutanix.vm as "Nutanix/${dataDate}_VM.csv"
+# vCPU (from VMs CSV)
+if ("${granularity}" == "hourly") {
+    import "${vm_pattern}" source nutanix alias vcpus options {
+        pattern enabled
+        filename_column enabled
+        filter ([power_state] == "ON")
+    }
+} else {
+    import "${vm_pattern}" source nutanix alias vcpus options {
+        pattern enabled
+        filter ([power_state] == "ON")
+    }
+}
 
-# when using  single Transformer, finish and services will be done below
-finish
+# Memory (from VMs CSV - memory_bytes)
+if ("${granularity}" == "hourly") {
+    import "${vm_pattern}" source nutanix alias gbram options {
+        pattern enabled
+        filename_column enabled
+        filter ([power_state] == "ON")
+    }
+} else {
+    import "${vm_pattern}" source nutanix alias gbram options {
+        pattern enabled
+        filter ([power_state] == "ON")
+    }
+}
 
-services {
-  # Service Definition
-  service_type = "automatic"
-  usages_col = service_key
-  description_col = service_name
-  category_col = service_category
-  instance_col = instance
-  interval = "monthly"
-  unit_label = "Units"
-  consumption_col = quantity
-  model = "unprorated"
-  charge_model = "peak"
-  # Service Rate / Revision
-  set_rate_using = service_rate
-  set_cogs_using = service_cogs
+# Provisioned disk (from VMs CSV - disk_provisioned_bytes). Counted
+# regardless of power state.
+if ("${granularity}" == "hourly") {
+    import "${vm_pattern}" source nutanix alias provdisk options {
+        pattern enabled
+        filename_column enabled
+    }
+} else {
+    import "${vm_pattern}" source nutanix alias provdisk options {
+        pattern enabled
+    }
+}
+
+# VM lookup table (one record per VM) used to enrich the stats dset
+# with vm_name / cluster_uuid when those happen to be missing.
+import "${vm_pattern}" source nutanix alias vmlookup options {
+    pattern enabled
+}
+
+# Used storage (from Stats CSV - controller_user_bytes)
+if ("${granularity}" == "hourly") {
+    import "${stats_pattern}" source nutanix alias usedstorage options {
+        pattern enabled
+        filename_column enabled
+    }
+} else {
+    import "${stats_pattern}" source nutanix alias usedstorage options {
+        pattern enabled
+    }
+}
+
+# CPU usage (from Stats CSV - hypervisor_cpu_usage_ppm)
+if ("${granularity}" == "hourly") {
+    import "${stats_pattern}" source nutanix alias cpuuse options {
+        pattern enabled
+        filename_column enabled
+    }
+} else {
+    import "${stats_pattern}" source nutanix alias cpuuse options {
+        pattern enabled
+    }
+}
+
+# Memory usage (from Stats CSV - memory_usage_ppm)
+if ("${granularity}" == "hourly") {
+    import "${stats_pattern}" source nutanix alias memuse options {
+        pattern enabled
+        filename_column enabled
+    }
+} else {
+    import "${stats_pattern}" source nutanix alias memuse options {
+        pattern enabled
+    }
+}
+
+# Optional rates lookup
+#import "import/lookup/Nutanix_rates.csv" source nutanix alias rates
+
+# =====================================================================
+# Hourly: derive a per-row `hour` column from EXIVITY_FILE_NAME.
+# Filename shape is "<YYYYMMDD>_<HH>_<host>_Nutanix_<...>.csv", so the
+# hour is the substring between the first and second underscore.
+# =====================================================================
+if ("${granularity}" == "hourly") {
+    default dset nutanix.vcpus
+    create column hour
+    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
+
+    default dset nutanix.gbram
+    create column hour
+    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
+
+    default dset nutanix.provdisk
+    create column hour
+    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
+
+    default dset nutanix.usedstorage
+    create column hour
+    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
+
+    default dset nutanix.cpuuse
+    create column hour
+    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
+
+    default dset nutanix.memuse
+    create column hour
+    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
+}
+
+# =====================================================================
+# vCPU service
+#   total_vcpus is sockets * cores_per_socket from the VMs CSV.
+# =====================================================================
+default dset nutanix.vcpus
+
+if ("${granularity}" == "hourly") {
+    aggregate nutanix.vcpus notime vm_uuid match vm_name match cluster_uuid match cluster_name match total_vcpus sum
+} else {
+    aggregate nutanix.vcpus notime vm_uuid match vm_name match cluster_uuid match cluster_name match total_vcpus match
+}
+
+where ([cluster_name] == "") {
+    set cluster_name as cluster_uuid
+}
+where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+    set cluster_name as cluster_uuid
+}
+
+option overwrite = no
+create column units value "${unit_vcpu}"
+create column rate value 1
+create column cogs
+rename column total_vcpus to quantity
+create column category value "Nutanix Consumption"
+rename column vm_name to instance
+create column service_name value "vCPU"
+create column service_desc
+set service_desc as service_name
+
+# =====================================================================
+# Memory service - convert memory_bytes -> GB
+# =====================================================================
+default dset nutanix.gbram
+calculate column RamGB as column memory_bytes / value 1073741824
+
+if ("${granularity}" == "hourly") {
+    aggregate nutanix.gbram notime vm_uuid match vm_name match cluster_uuid match cluster_name match RamGB sum
+} else {
+    aggregate nutanix.gbram notime vm_uuid match vm_name match cluster_uuid match cluster_name match RamGB match
+}
+
+where ([cluster_name] == "") {
+    set cluster_name as cluster_uuid
+}
+where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+    set cluster_name as cluster_uuid
+}
+
+option overwrite = no
+create column units value "${unit_gb}"
+create column rate value 1
+create column cogs
+rename column RamGB to quantity
+create column category value "Nutanix Consumption"
+rename column vm_name to instance
+create column service_name value "Memory (${unit_gb})"
+create column service_desc
+set service_desc as service_name
+
+# =====================================================================
+# Provisioned Disk service - disk_provisioned_bytes -> GB
+# =====================================================================
+default dset nutanix.provdisk
+calculate column ProvGB as column disk_provisioned_bytes / value 1073741824
+
+if ("${granularity}" == "hourly") {
+    aggregate nutanix.provdisk notime vm_uuid match vm_name match cluster_uuid match cluster_name match ProvGB sum
+} else {
+    aggregate nutanix.provdisk notime vm_uuid match vm_name match cluster_uuid match cluster_name match ProvGB match
+}
+
+where ([cluster_name] == "") {
+    set cluster_name as cluster_uuid
+}
+where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+    set cluster_name as cluster_uuid
+}
+
+option overwrite = no
+create column units value "${unit_gb}"
+create column rate value 1
+create column cogs
+rename column ProvGB to quantity
+create column category value "Nutanix Consumption"
+rename column vm_name to instance
+create column service_name value "Provisioned Disk (${unit_gb})"
+create column service_desc
+set service_desc as service_name
+
+# =====================================================================
+# Used Storage service - controller_user_bytes -> GB
+# Stats records can be missing vm_name; correlate from the VM lookup.
+# =====================================================================
+default dset nutanix.usedstorage
+correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
+where ([vm_name] == "EXIVITY_NOT_FOUND") {
+    set vm_name to "Unknown VM"
+}
+calculate column UsedGB as column controller_user_bytes / value 1073741824
+
+if ("${granularity}" == "hourly") {
+    aggregate nutanix.usedstorage notime vm_uuid match vm_name match cluster_uuid match cluster_name match UsedGB sum
+} else {
+    aggregate nutanix.usedstorage notime vm_uuid match vm_name match cluster_uuid match cluster_name match UsedGB match
+}
+
+where ([cluster_name] == "") {
+    set cluster_name as cluster_uuid
+}
+where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+    set cluster_name as cluster_uuid
+}
+
+option overwrite = no
+create column units value "${unit_gb}"
+create column rate value 1
+create column cogs
+rename column UsedGB to quantity
+create column category value "Nutanix Consumption"
+rename column vm_name to instance
+create column service_name value "Used Storage (${unit_gb})"
+create column service_desc
+set service_desc as service_name
+
+# =====================================================================
+# CPU Usage service - hypervisor_cpu_usage_ppm -> percent
+# (parts-per-million / 10000 = percent)
+# =====================================================================
+default dset nutanix.cpuuse
+correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
+where ([vm_name] == "EXIVITY_NOT_FOUND") {
+    set vm_name to "Unknown VM"
+}
+calculate column CpuPct as column hypervisor_cpu_usage_ppm / value 10000
+
+if ("${granularity}" == "hourly") {
+    aggregate nutanix.cpuuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match CpuPct sum
+} else {
+    aggregate nutanix.cpuuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match CpuPct match
+}
+
+where ([cluster_name] == "") {
+    set cluster_name as cluster_uuid
+}
+where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+    set cluster_name as cluster_uuid
+}
+
+option overwrite = no
+create column units value "${unit_pct}"
+create column rate value 0
+create column cogs
+rename column CpuPct to quantity
+create column category value "Nutanix Consumption"
+rename column vm_name to instance
+create column service_name value "CPU Usage (${unit_pct})"
+create column service_desc
+set service_desc as service_name
+
+# =====================================================================
+# Memory Usage service - memory_usage_ppm -> percent
+# =====================================================================
+default dset nutanix.memuse
+correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
+where ([vm_name] == "EXIVITY_NOT_FOUND") {
+    set vm_name to "Unknown VM"
+}
+calculate column MemPct as column memory_usage_ppm / value 10000
+
+if ("${granularity}" == "hourly") {
+    aggregate nutanix.memuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match MemPct sum
+} else {
+    aggregate nutanix.memuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match MemPct match
+}
+
+where ([cluster_name] == "") {
+    set cluster_name as cluster_uuid
+}
+where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+    set cluster_name as cluster_uuid
+}
+
+option overwrite = no
+create column units value "${unit_pct}"
+create column rate value 0
+create column cogs
+rename column MemPct to quantity
+create column category value "Nutanix Consumption"
+rename column vm_name to instance
+create column service_name value "Memory Usage (${unit_pct})"
+create column service_desc
+set service_desc as service_name
+
+# =====================================================================
+# Append everything into one final dset.
+# =====================================================================
+rename dset nutanix.vcpus to nutanix.final
+default dset nutanix.final
+append nutanix.gbram to nutanix.final
+append nutanix.provdisk to nutanix.final
+append nutanix.usedstorage to nutanix.final
+append nutanix.cpuuse to nutanix.final
+append nutanix.memuse to nutanix.final
+
+# Optional rate correlation
+#correlate rate using service_name assuming nutanix.rates
+set cogs as rate
+
+# Tidy up - drop columns we no longer need for reporting. EXIVITY_FILE_NAME
+# and `hour` are only present in hourly mode but `delete columns` is
+# idempotent for already-absent columns, so the same line works for both.
+# total_vcpus survives via the appends from non-vCPU branches as a stray
+# empty column and is not needed in the final output.
+delete columns vm_uuid cluster_uuid memory_bytes disk_provisioned_bytes controller_user_bytes hypervisor_cpu_usage_ppm memory_usage_ppm power_state num_sockets num_cores_per_socket total_vcpus datadate hour EXIVITY_FILE_NAME EXIVITY_AGGR_COUNT
+
+# Export a copy alongside the RDF.
+export nutanix.final as "Nutanix/Invoice/${dataDate}_Nutanix_Report"
+export nutanix.final as "Exivity/MasterInput/${dataDate}_nutanix_normalized.csv"
+
+if ("${generate_services}" == "yes") {
+    finish
+
+    services {
+        effective_date     = 20240101
+        service_type       = automatic
+        description_col    = service_name
+        category_col       = category
+        instance_col       = instance
+        usages_col         = service_name
+        set_rate_using     = rate
+        set_cogs_using     = cogs
+        interval           = monthly
+        unit_label_col     = units
+        consumption_col    = quantity
+    }
 }

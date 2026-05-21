@@ -1,0 +1,186 @@
+# Nutanix-Prism_AuthTest.use
+# -----------------------------------------------------------------------------
+# Disposable test extractor: probes Prism Central v4 with several auth
+# methods against /api/vmm/v4.0/ahv/config/vms?$page=0&$limit=1 and
+# prints the HTTP status code for each. Whichever returns 200 is the
+# correct auth method to use in the real extractors.
+#
+# Required Exivity variables (same names the real extractors use):
+#   nutanix_host    : Prism Central IP/hostname (no scheme, no port)
+#   nutanix_secret  : The API key VALUE (the secret shown once at creation)
+#
+# Optional (only used by the Basic-auth probe):
+#   nutanix_keyname : Service account name (e.g. "exivity") OR key
+#                     name (e.g. "exivity_api_reader"). If unset, the
+#                     Basic-auth probe is skipped.
+#
+# JSON response bodies for each probe land in:
+#   system/extracted/Nutanix/JSON/authtest_<probe>.json
+# Inspect those if you want to see the exact server error text.
+# -----------------------------------------------------------------------------
+
+loglevel DEBUG
+
+public var nutanix_endpoint = "${nutanix_host}"
+public var nutanix_port = "9440"
+public encrypt var nutanix_api_key = "${nutanix_secret}"
+public var nutanix_key_name = "${nutanix_keyname}"
+public var secure_ssl = "no"
+public var exportdir = "system/extracted/Nutanix"
+
+set http_secure ${secure_ssl}
+set http_timeout 60
+
+var jsonfolder = "${exportdir}/JSON"
+var probe_url = "https://${nutanix_endpoint}:${nutanix_port}/api/vmm/v4.0/ahv/config/vms?$page=0&$limit=1"
+
+print "==================================================================="
+print "Nutanix Prism Central v4 auth probe"
+print "Target: ${probe_url}"
+print "==================================================================="
+
+# ---------------------------------------------------------------------------
+# Probe 1: Authorization: Bearer <keyvalue>
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 1: Authorization: Bearer <keyvalue> ---"
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Authorization: Bearer ${nutanix_api_key}"
+set http_savefile "${jsonfolder}/authtest_bearer.json"
+buffer probe1 = http GET "${probe_url}"
+print "Probe 1 result: HTTP ${HTTP_STATUS_CODE}"
+print "Probe 1 body:"
+print {probe1}
+discard {probe1}
+
+# ---------------------------------------------------------------------------
+# Probe 2: X-ntnx-api-key: <keyvalue>
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 2: X-ntnx-api-key: <keyvalue> ---"
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "X-ntnx-api-key: ${nutanix_api_key}"
+set http_savefile "${jsonfolder}/authtest_xntnxapikey.json"
+buffer probe2 = http GET "${probe_url}"
+print "Probe 2 result: HTTP ${HTTP_STATUS_CODE}"
+print "Probe 2 body:"
+print {probe2}
+discard {probe2}
+
+# ---------------------------------------------------------------------------
+# Probe 3: Api-Key: <keyvalue>
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 3: Api-Key: <keyvalue> ---"
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Api-Key: ${nutanix_api_key}"
+set http_savefile "${jsonfolder}/authtest_apikey.json"
+buffer probe3 = http GET "${probe_url}"
+print "Probe 3 result: HTTP ${HTTP_STATUS_CODE}"
+print "Probe 3 body:"
+print {probe3}
+discard {probe3}
+
+# ---------------------------------------------------------------------------
+# Probe 4: X-Nutanix-Auth-Token: <keyvalue> (legacy header)
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 4: X-Nutanix-Auth-Token: <keyvalue> (legacy) ---"
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "X-Nutanix-Auth-Token: ${nutanix_api_key}"
+set http_savefile "${jsonfolder}/authtest_legacytoken.json"
+buffer probe4 = http GET "${probe_url}"
+print "Probe 4 result: HTTP ${HTTP_STATUS_CODE}"
+print "Probe 4 body:"
+print {probe4}
+discard {probe4}
+
+# ---------------------------------------------------------------------------
+# Probe 5: HTTP Basic auth, base64("<keyname>:<keyvalue>")
+# Only attempted if nutanix_keyname is set (and not the literal
+# placeholder "${nutanix_keyname}" left when the env var is missing).
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 5: Authorization: Basic base64(<keyname>:<keyvalue>) ---"
+if ("${nutanix_key_name}" == "") {
+    print "Probe 5 skipped: nutanix_keyname is empty."
+} else {
+    if ("${nutanix_key_name}" == "$\{nutanix_keyname\}") {
+        print "Probe 5 skipped: nutanix_keyname env var not set."
+    } else {
+        var nutanix_login = "${nutanix_key_name}:${nutanix_api_key}"
+        encode base64 nutanix_login
+        clear http_headers
+        set http_header "Accept: application/json"
+        set http_header "Authorization: Basic ${nutanix_login}"
+        set http_savefile "${jsonfolder}/authtest_basic.json"
+        buffer probe5 = http GET "${probe_url}"
+        print "Probe 5 result: HTTP ${HTTP_STATUS_CODE} (keyname='${nutanix_key_name}')"
+        print "Probe 5 body:"
+        print {probe5}
+        discard {probe5}
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Probe 6: HTTP Basic auth via http_username / http_password (uses the
+# native USE basic-auth path rather than a hand-built header).
+# Same gate on nutanix_keyname as probe 5.
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 6: Native http_username/http_password Basic auth ---"
+if ("${nutanix_key_name}" == "") {
+    print "Probe 6 skipped: nutanix_keyname is empty."
+} else {
+    if ("${nutanix_key_name}" == "$\{nutanix_keyname\}") {
+        print "Probe 6 skipped: nutanix_keyname env var not set."
+    } else {
+        clear http_headers
+        set http_header "Accept: application/json"
+        set http_username ${nutanix_key_name}
+        set http_password ${nutanix_api_key}
+        set http_authtype basic
+        set http_savefile "${jsonfolder}/authtest_nativebasic.json"
+        buffer probe6 = http GET "${probe_url}"
+        print "Probe 6 result: HTTP ${HTTP_STATUS_CODE} (keyname='${nutanix_key_name}')"
+        print "Probe 6 body:"
+        print {probe6}
+        discard {probe6}
+    }
+}
+
+print ""
+print "==================================================================="
+print "Done. Look for a probe that returned HTTP 200."
+print "  200 -> that's the correct auth method"
+print "  401 -> credentials not accepted at all"
+print "  403 -> credentials accepted, but no Aplos entitlement"
+print "  302 -> not authenticated (redirect to login)"
+print "Inspect ${jsonfolder}/authtest_*.json for the exact server reply."
+print "==================================================================="
+
+# ---------------------------------------------------------------------------
+# Probe 7: identity introspection. Hits the "who am I?" endpoint with
+# the bearer token. Tells us whether PC's auth layer resolves the
+# bearer to the exivity service account or to some other / no
+# identity. This is independent of Aplos and pinpoints whether a 403
+# from /vmm is an entitlement issue (identity resolved correctly) or
+# an identity-resolution issue (bearer not mapped to our account).
+# ---------------------------------------------------------------------------
+print ""
+print "--- Probe 7: GET /api/iam/authn/v4.0/sessions/me (Bearer) ---"
+clear http_headers
+set http_header "Accept: application/json"
+set http_header "Authorization: Bearer ${nutanix_api_key}"
+set http_savefile "${jsonfolder}/authtest_whoami.json"
+buffer probe7 = http GET "https://${nutanix_endpoint}:${nutanix_port}/api/iam/authn/v4.0/sessions/me"
+print "Probe 7 result: HTTP ${HTTP_STATUS_CODE}"
+print "Probe 7 body:"
+print {probe7}
+discard {probe7}
+
+terminate
