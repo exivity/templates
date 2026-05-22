@@ -37,6 +37,9 @@ option overwrite = NO
 # =====================================================================
 
 var granularity = "daily"   # set to "daily" or "hourly"
+# Include stats-derived services (used storage, CPU usage, memory usage).
+# Set to "no" when only VMs extractor output is available.
+var include_stats = "yes"
 var generate_services = "yes"   # set to "no" to skip finish/services and only export dataset
 
 # Filename patterns. With `pattern enabled`, Exivity treats only the
@@ -118,39 +121,39 @@ import "${vm_pattern}" source nutanix alias vmlookup options {
     pattern enabled
 }
 
-# Used storage (from Stats CSV - controller_user_bytes)
-if ("${granularity}" == "hourly") {
-    import "${stats_pattern}" source nutanix alias usedstorage options {
-        pattern enabled
-        filename_column enabled
+# Used storage, CPU usage, Memory usage (from Stats CSV)
+if ("${include_stats}" == "yes") {
+    if ("${granularity}" == "hourly") {
+        import "${stats_pattern}" source nutanix alias usedstorage options {
+            pattern enabled
+            filename_column enabled
+        }
+    } else {
+        import "${stats_pattern}" source nutanix alias usedstorage options {
+            pattern enabled
+        }
     }
-} else {
-    import "${stats_pattern}" source nutanix alias usedstorage options {
-        pattern enabled
-    }
-}
 
-# CPU usage (from Stats CSV - hypervisor_cpu_usage_ppm)
-if ("${granularity}" == "hourly") {
-    import "${stats_pattern}" source nutanix alias cpuuse options {
-        pattern enabled
-        filename_column enabled
+    if ("${granularity}" == "hourly") {
+        import "${stats_pattern}" source nutanix alias cpuuse options {
+            pattern enabled
+            filename_column enabled
+        }
+    } else {
+        import "${stats_pattern}" source nutanix alias cpuuse options {
+            pattern enabled
+        }
     }
-} else {
-    import "${stats_pattern}" source nutanix alias cpuuse options {
-        pattern enabled
-    }
-}
 
-# Memory usage (from Stats CSV - memory_usage_ppm)
-if ("${granularity}" == "hourly") {
-    import "${stats_pattern}" source nutanix alias memuse options {
-        pattern enabled
-        filename_column enabled
-    }
-} else {
-    import "${stats_pattern}" source nutanix alias memuse options {
-        pattern enabled
+    if ("${granularity}" == "hourly") {
+        import "${stats_pattern}" source nutanix alias memuse options {
+            pattern enabled
+            filename_column enabled
+        }
+    } else {
+        import "${stats_pattern}" source nutanix alias memuse options {
+            pattern enabled
+        }
     }
 }
 
@@ -282,105 +285,111 @@ set service_desc as service_name
 # Used Storage service - controller_user_bytes -> GB
 # Stats records can be missing vm_name; correlate from the VM lookup.
 # =====================================================================
-default dset nutanix.usedstorage
-correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
-where ([vm_name] == "EXIVITY_NOT_FOUND") {
-    set vm_name to "Unknown VM"
-}
-calculate column UsedGB as column controller_user_bytes / value 1073741824
+if ("${include_stats}" == "yes") {
+    default dset nutanix.usedstorage
+    correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
+    where ([vm_name] == "EXIVITY_NOT_FOUND") {
+        set vm_name to "Unknown VM"
+    }
+    calculate column UsedGB as column controller_user_bytes / value 1073741824
 
-if ("${granularity}" == "hourly") {
-    aggregate nutanix.usedstorage notime vm_uuid match vm_name match cluster_uuid match cluster_name match UsedGB sum
-} else {
-    aggregate nutanix.usedstorage notime vm_uuid match vm_name match cluster_uuid match cluster_name match UsedGB match
-}
+    if ("${granularity}" == "hourly") {
+        aggregate nutanix.usedstorage notime vm_uuid match vm_name match cluster_uuid match cluster_name match UsedGB sum
+    } else {
+        aggregate nutanix.usedstorage notime vm_uuid match vm_name match cluster_uuid match cluster_name match UsedGB match
+    }
 
-where ([cluster_name] == "") {
-    set cluster_name as cluster_uuid
-}
-where ([cluster_name] == "EXIVITY_NOT_FOUND") {
-    set cluster_name as cluster_uuid
-}
+    where ([cluster_name] == "") {
+        set cluster_name as cluster_uuid
+    }
+    where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+        set cluster_name as cluster_uuid
+    }
 
-option overwrite = no
-create column units value "${unit_gb}"
-create column rate value 1
-create column cogs
-rename column UsedGB to quantity
-create column category value "Nutanix Consumption"
-rename column vm_name to instance
-create column service_name value "Used Storage (${unit_gb})"
-create column service_desc
-set service_desc as service_name
+    option overwrite = no
+    create column units value "${unit_gb}"
+    create column rate value 1
+    create column cogs
+    rename column UsedGB to quantity
+    create column category value "Nutanix Consumption"
+    rename column vm_name to instance
+    create column service_name value "Used Storage (${unit_gb})"
+    create column service_desc
+    set service_desc as service_name
+}
 
 # =====================================================================
 # CPU Usage service - hypervisor_cpu_usage_ppm -> percent
 # (parts-per-million / 10000 = percent)
 # =====================================================================
-default dset nutanix.cpuuse
-correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
-where ([vm_name] == "EXIVITY_NOT_FOUND") {
-    set vm_name to "Unknown VM"
-}
-calculate column CpuPct as column hypervisor_cpu_usage_ppm / value 10000
+if ("${include_stats}" == "yes") {
+    default dset nutanix.cpuuse
+    correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
+    where ([vm_name] == "EXIVITY_NOT_FOUND") {
+        set vm_name to "Unknown VM"
+    }
+    calculate column CpuPct as column hypervisor_cpu_usage_ppm / value 10000
 
-if ("${granularity}" == "hourly") {
-    aggregate nutanix.cpuuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match CpuPct sum
-} else {
-    aggregate nutanix.cpuuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match CpuPct match
-}
+    if ("${granularity}" == "hourly") {
+        aggregate nutanix.cpuuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match CpuPct sum
+    } else {
+        aggregate nutanix.cpuuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match CpuPct match
+    }
 
-where ([cluster_name] == "") {
-    set cluster_name as cluster_uuid
-}
-where ([cluster_name] == "EXIVITY_NOT_FOUND") {
-    set cluster_name as cluster_uuid
-}
+    where ([cluster_name] == "") {
+        set cluster_name as cluster_uuid
+    }
+    where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+        set cluster_name as cluster_uuid
+    }
 
-option overwrite = no
-create column units value "${unit_pct}"
-create column rate value 0
-create column cogs
-rename column CpuPct to quantity
-create column category value "Nutanix Consumption"
-rename column vm_name to instance
-create column service_name value "CPU Usage (${unit_pct})"
-create column service_desc
-set service_desc as service_name
+    option overwrite = no
+    create column units value "${unit_pct}"
+    create column rate value 0
+    create column cogs
+    rename column CpuPct to quantity
+    create column category value "Nutanix Consumption"
+    rename column vm_name to instance
+    create column service_name value "CPU Usage (${unit_pct})"
+    create column service_desc
+    set service_desc as service_name
+}
 
 # =====================================================================
 # Memory Usage service - memory_usage_ppm -> percent
 # =====================================================================
-default dset nutanix.memuse
-correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
-where ([vm_name] == "EXIVITY_NOT_FOUND") {
-    set vm_name to "Unknown VM"
-}
-calculate column MemPct as column memory_usage_ppm / value 10000
+if ("${include_stats}" == "yes") {
+    default dset nutanix.memuse
+    correlate vm_name cluster_uuid cluster_name using vm_uuid assuming nutanix.vmlookup
+    where ([vm_name] == "EXIVITY_NOT_FOUND") {
+        set vm_name to "Unknown VM"
+    }
+    calculate column MemPct as column memory_usage_ppm / value 10000
 
-if ("${granularity}" == "hourly") {
-    aggregate nutanix.memuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match MemPct sum
-} else {
-    aggregate nutanix.memuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match MemPct match
-}
+    if ("${granularity}" == "hourly") {
+        aggregate nutanix.memuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match MemPct sum
+    } else {
+        aggregate nutanix.memuse notime vm_uuid match vm_name match cluster_uuid match cluster_name match MemPct match
+    }
 
-where ([cluster_name] == "") {
-    set cluster_name as cluster_uuid
-}
-where ([cluster_name] == "EXIVITY_NOT_FOUND") {
-    set cluster_name as cluster_uuid
-}
+    where ([cluster_name] == "") {
+        set cluster_name as cluster_uuid
+    }
+    where ([cluster_name] == "EXIVITY_NOT_FOUND") {
+        set cluster_name as cluster_uuid
+    }
 
-option overwrite = no
-create column units value "${unit_pct}"
-create column rate value 0
-create column cogs
-rename column MemPct to quantity
-create column category value "Nutanix Consumption"
-rename column vm_name to instance
-create column service_name value "Memory Usage (${unit_pct})"
-create column service_desc
-set service_desc as service_name
+    option overwrite = no
+    create column units value "${unit_pct}"
+    create column rate value 0
+    create column cogs
+    rename column MemPct to quantity
+    create column category value "Nutanix Consumption"
+    rename column vm_name to instance
+    create column service_name value "Memory Usage (${unit_pct})"
+    create column service_desc
+    set service_desc as service_name
+}
 
 # =====================================================================
 # Append everything into one final dset.
@@ -389,9 +398,11 @@ rename dset nutanix.vcpus to nutanix.final
 default dset nutanix.final
 append nutanix.gbram to nutanix.final
 append nutanix.provdisk to nutanix.final
-append nutanix.usedstorage to nutanix.final
-append nutanix.cpuuse to nutanix.final
-append nutanix.memuse to nutanix.final
+if ("${include_stats}" == "yes") {
+    append nutanix.usedstorage to nutanix.final
+    append nutanix.cpuuse to nutanix.final
+    append nutanix.memuse to nutanix.final
+}
 
 # Optional rate correlation
 #correlate rate using service_name assuming nutanix.rates
