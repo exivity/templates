@@ -1,0 +1,88 @@
+# Set run time options
+option loglevel = INFO
+
+# Importing prometheus cpu seconds
+import "system/extracted/prometheus/${dataDate}_prometheus_cpu_seconds.csv" source container alias cpu
+# Importing prometheus memory bytes
+import "system/extracted/prometheus/${dataDate}_prometheus_memory_bytes.csv" source container alias memory
+# Importing prometheus pod labels
+import "system/extracted/prometheus/${dataDate}_prometheus_pod_labels.csv" source pod alias labels
+
+
+# process cpu
+delete columns except container id name namespace pod start_time end_time cpu_seconds
+create column service_key value total_cpu_hours
+create column service_name value "Consumed CPU Hours"
+create column unit value "CPU/hours"
+set cpu_seconds = ([cpu_seconds]/60/60)
+rename column cpu_seconds to quantity
+
+# process memory
+default dset container.memory
+delete columns except container id name namespace pod start_time end_time memory_bytes
+create column service_key value total_memory_gb
+create column service_name value "Consumed Memory GB"
+create column unit value "Memory/GB"
+set memory_bytes = ([memory_bytes]/1024/1024/1024)
+rename column memory_bytes to quantity
+
+# clean labels
+default dset pod.labels
+delete columns except environment instance label_app label_component label_environment label_service label_stage label_team namespace pod start_time end_time
+
+# create consolidated dataset
+append container.memory to container.cpu
+rename dset container.cpu to k8.usage
+default dset k8.usage
+
+correlate environment instance label_app label_component label_environment label_service label_stage label_team using pod assuming pod.labels
+
+where ([label_service] == "EXIVITY_NOT_FOUND") {
+	set label_service to "[Service N/A]"
+}
+where ([label_environment] == "EXIVITY_NOT_FOUND") {
+	set label_environment to "[Environment N/A]"
+}
+where ([namespace] == "EXIVITY_NOT_FOUND") {
+	set namespace to "[Namespace N/A]"
+}
+where ([pod] == "EXIVITY_NOT_FOUND") {
+	set pod to "[Pod N/A]"
+}
+rename column instance to kube_instance
+create column instance 
+set instance as pod
+option overwrite = no
+set namespace to "[Namespace N/A]"
+set environment to "[Environment N/A]"
+set label_app to "[App N/A]"
+set label_component to "[Component N/A]"
+set label_environment to "[Environment N/A]"
+set label_service to "[Service N/A]"
+set label_stage to "[N/A]"
+set label_team to "[N/A]"
+set instance as id
+delete column id
+
+# set service defaults 
+create column category value "Kubernetes Consumption"
+create column interval value "individually"
+# create dummy rate column
+create column rate value 0.001 # Set default rate for service
+create column cogs value 0.0008 # Set default cogs for service
+
+finish
+# option services = overwrite
+services {
+ 	effective_date = 20240101
+	service_type = automatic
+	description_col = service_name
+	category_col = category
+	instance_col = instance
+	usages_col = service_key
+	set_rate_using = rate  # same for rate_col
+	set_cogs_using = cogs # same for cogs_col
+	interval_col  = interval
+	unit_label_col = unit 
+	consumption_col = quantity
+}
