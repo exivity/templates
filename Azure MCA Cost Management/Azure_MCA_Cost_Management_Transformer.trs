@@ -1,0 +1,134 @@
+option loglevel = INFO
+option overwrite = no
+
+# =====================================================================
+# Azure MCA Cost Management Transformer
+#
+# Consumes Cost Details Report CSV blobs produced by
+# Azure_MCA_Cost_Management.use and turns them into Exivity-ready
+# data. Output is twofold:
+#   - finish into RDF when run as a stand-alone Azure MCA report
+#   - export a normalized CSV into Exivity/MasterInput so the
+#     Master_Consumption_Transformer.trs can blend Azure MCA usage
+#     with other vendors (vCloud, Nutanix, etc.)
+#
+# Cost Details CSV column reference:
+# https://learn.microsoft.com/en-us/azure/cost-management-billing/automate/understand-usage-details-fields
+# =====================================================================
+
+# Set to "no" when this transformer is only used to feed the master
+# transformer; that avoids generating duplicate services.
+var generate_services = "yes"
+
+# Set to "no" to skip the MasterInput export when blending is not used.
+var export_to_masterinput = "yes"
+
+# The Extractor writes blobs to system/extracted/AzureMCA/blob/.
+# Filenames are azure_mca_<period>_<n>.csv where <period> is either
+# yyyymmdd_yyyymmdd (timePeriod mode) or the invoice id (invoiceId mode).
+import "system/extracted/AzureMCA/blob/azure_mca_${dataYear}${dataMonth}*_*.csv" source azure alias mca options {
+    pattern enabled
+    escaped = yes
+    filter = ([Date] =~ /${dataMonth}.${dataDay}.${dataYear}.*/)
+}
+
+default dset azure.mca
+
+# ---------------------------------------------------------------------
+# Column normalization
+# ---------------------------------------------------------------------
+# Cost Details CSV column names are documented by Microsoft and stable.
+# Only the billing currency header has a known alias; everything else
+# matches the canonical casing used below.
+rename column ${/^[Bb]illing[Cc]urrency[Cc]ode$/} to BillingCurrency
+
+# ---------------------------------------------------------------------
+# Exivity-friendly columns
+# ---------------------------------------------------------------------
+option overwrite = yes
+
+# Instance: prefer the resource id; fall back to MeterName for
+# subscription-level charges (taxes, marketplace fees) without a resource.
+create mergedcolumn instance from "ResourceId" /^.*\/([^/]+)$/
+where ([instance] == "") {
+    set instance as MeterName
+}
+where ([instance] == "EXIVITY_NOT_FOUND") {
+    set instance as MeterName
+}
+
+# Service description: Marketplace items roll up under Publisher / Plan.
+rename column ProductName to service
+where ([PublisherType] == "Marketplace") {
+    set service = (@CONCAT([PublisherName], " - ", [PlanName]))
+    set MeterCategory to "Marketplace"
+}
+
+rename column MeterCategory to category
+
+# Stable service key. PartNumber is unique per MCA SKU so concatenating
+# it with the friendly service name gives a deterministic identifier.
+create column service_key
+set service_key = (@CONCAT([service], "_", [PartNumber], "_MCA"))
+
+# Reservations and savings plan purchases are recognized via UnitOfMeasure.
+create column unit
+set unit = (@CONCAT([UnitOfMeasure], "/", [ChargeType], " Hours"))
+replace "Unassigned/" in unit
+where ([unit] =~ /.*Purchase.*/) {
+    set category to "Reservations"
+}
+
+rename column Quantity to quantity
+rename column CostInBillingCurrency to cost
+create column interval value "individually"
+
+option overwrite = no
+
+# ---------------------------------------------------------------------
+# Aggregate to a manageable level and derive rate / cogs
+# ---------------------------------------------------------------------
+delete columns except BillingAccountId BillingProfileId InvoiceSectionName SubscriptionId SubscriptionName ResourceGroup ResourceLocation ServiceFamily category instance service_key service unit quantity cost interval Date Tags
+
+aggregate azure.mca notime default_function match quantity sum cost sum
+
+create column rate
+set rate = ([cost] / [quantity])
+create column cogs
+set cogs as rate
+
+# Example uplift hook - leave commented for the generic template
+# set rate = [rate] * 1.05
+
+delete columns EXIVITY_AGGR_COUNT
+
+# ---------------------------------------------------------------------
+# Optional export for the master/blend transformer.
+# The dset is exported as-is with its Azure-MCA column names; the
+# Master_Consumption_Transformer.trs maps those names to the common
+# schema, mirroring how vCloud and Nutanix are handled.
+# ---------------------------------------------------------------------
+if ("${export_to_masterinput}" == "yes") {
+    export azure.mca as "Exivity/MasterInput/${dataDate}_azure_mca_normalized.csv"
+}
+
+# ---------------------------------------------------------------------
+# Stand-alone services / RDF output
+# ---------------------------------------------------------------------
+if ("${generate_services}" == "yes") {
+    finish
+
+    services {
+        effective_date  = 20240101
+        service_type    = automatic
+        usages_col      = service_key
+        description_col = service
+        category_col    = category
+        instance_col    = instance
+        rate_col        = rate
+        cogs_col        = cogs
+        interval_col    = interval
+        unit_label_col  = unit
+        consumption_col = quantity
+    }
+}
