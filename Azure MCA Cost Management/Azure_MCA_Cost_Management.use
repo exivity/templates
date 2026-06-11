@@ -1,0 +1,409 @@
+#======================== Configuration ========================#
+#
+# Azure MCA Cost Management Cost Details Extractor
+#
+# This extractor retrieves Azure Cost Details Report data for a
+# Microsoft Customer Agreement (MCA) billing profile using Microsoft
+# Entra ID client credentials. It does not use legacy EA API keys.
+#
+# Microsoft reference:
+# https://learn.microsoft.com/en-us/rest/api/cost-management/generate-cost-details-report/create-operation?view=rest-cost-management-2023-11-01
+#
+# -------------------------------------------------------------------
+# Recommended: store credentials in an Exivity Environment instead of
+# editing this file. Create the following Environment variables and
+# attach the Environment to the workflow that runs this extractor:
+#
+#   Required:
+#     azure_mca_tenant_id           # Microsoft Entra tenant GUID
+#     azure_mca_client_id           # App registration (client) GUID
+#     azure_mca_client_secret       # App registration secret value
+#     azure_mca_billing_account_id  # MCA billing account ID
+#     azure_mca_billing_profile_id  # MCA billing profile ID
+#
+#   Optional (only needed for non-default scopes/modes):
+#     azure_mca_subscription_id     # Used when request_scope_type=subscription
+#     azure_mca_invoice_id          # Used when period_type=invoiceId
+#
+# When the variables are missing, Exivity substitutes the literal
+# placeholder text below and the validation checks further on stop the
+# run with a clear message instead of calling Azure with bad input.
+# -------------------------------------------------------------------
+
+# Microsoft Entra application credentials (sourced from Environment)
+public var          tenant_id      = "${azure_mca_tenant_id}"
+public var          client_id      = "${azure_mca_client_id}"
+public encrypt var  client_secret  = "${azure_mca_client_secret}"
+
+# MCA billing profile scope for all subscriptions under that billing profile
+public var billing_account_id = "${azure_mca_billing_account_id}"
+public var billing_profile_id = "${azure_mca_billing_profile_id}"
+
+# Optional subscription fallback. Only used when request_scope_type is "subscription".
+public var subscription_id = "${azure_mca_subscription_id}"
+
+# Use "billing_profile" for MCA all-up extraction or "subscription" for one subscription.
+public var request_scope_type = "billing_profile"
+
+# Use "timePeriod" for date-range extraction or "invoiceId" for finalized MCA invoices.
+public var period_type = "timePeriod"
+
+# Required only when period_type is "invoiceId".
+public var invoice_id = "${azure_mca_invoice_id}"
+
+# Cost metric: ActualCost or AmortizedCost
+public var metric_type = "ActualCost"
+
+# Azure endpoints
+public var resource = "https://management.azure.com"
+public var auth_endpoint = "https://login.microsoftonline.com/${tenant_id}/oauth2/v2.0/token"
+
+# Output and logging
+public var exportdir = "system/extracted/AzureMCA"
+public var loglevel = "INFO"
+loglevel ${loglevel}
+
+#======================== Credential validation ========================#
+# Stop early if the Environment variables were not supplied; Exivity
+# leaves the literal "${name}" string in place when a variable is unset.
+
+if ("${tenant_id}" == "") {
+    print "tenant_id is empty. Set the azure_mca_tenant_id Environment variable."
+    terminate with error
+}
+if ("${tenant_id}" == "$\{azure_mca_tenant_id\}") {
+    print "tenant_id is unset. Set the azure_mca_tenant_id Environment variable."
+    terminate with error
+}
+if ("${client_id}" == "") {
+    print "client_id is empty. Set the azure_mca_client_id Environment variable."
+    terminate with error
+}
+if ("${client_id}" == "$\{azure_mca_client_id\}") {
+    print "client_id is unset. Set the azure_mca_client_id Environment variable."
+    terminate with error
+}
+if ("${client_secret}" == "") {
+    print "client_secret is empty. Set the azure_mca_client_secret Environment variable."
+    terminate with error
+}
+if ("${client_secret}" == "$\{azure_mca_client_secret\}") {
+    print "client_secret is unset. Set the azure_mca_client_secret Environment variable."
+    terminate with error
+}
+if ("${billing_account_id}" == "") {
+    print "billing_account_id is empty. Set the azure_mca_billing_account_id Environment variable."
+    terminate with error
+}
+if ("${billing_account_id}" == "$\{azure_mca_billing_account_id\}") {
+    print "billing_account_id is unset. Set the azure_mca_billing_account_id Environment variable."
+    terminate with error
+}
+if ("${billing_profile_id}" == "") {
+    print "billing_profile_id is empty. Set the azure_mca_billing_profile_id Environment variable."
+    terminate with error
+}
+if ("${billing_profile_id}" == "$\{azure_mca_billing_profile_id\}") {
+    print "billing_profile_id is unset. Set the azure_mca_billing_profile_id Environment variable."
+    terminate with error
+}
+
+#======================== Input handling ========================#
+
+if ("${period_type}" == "timePeriod") {
+    gosub check_dateargument()
+    gosub format_start_date(${ARG_1})
+    gosub format_to_date(${ARG_2})
+    var start_date = (@CONCAT("${start_year}","-","${start_month}","-","${start_day}"))
+    var end_date = (@CONCAT("${to_year}","-","${to_month}","-","${to_day}"))
+    var extract_period = (@CONCAT("${ARG_1}","_","${ARG_2}"))
+    var request_body = "{\"metric\":\"${metric_type}\",\"timePeriod\":{\"start\":\"${start_date}\",\"end\":\"${end_date}\"}}"
+}
+
+if ("${period_type}" == "invoiceId") {
+    if ("${invoice_id}" == "") {
+        print "invoice_id is empty. Set the azure_mca_invoice_id Environment variable when period_type is invoiceId."
+        terminate with error
+    }
+    if ("${invoice_id}" == "$\{azure_mca_invoice_id\}") {
+        print "invoice_id is unset. Set the azure_mca_invoice_id Environment variable when period_type is invoiceId."
+        terminate with error
+    }
+    var extract_period = ${invoice_id}
+    var request_body = "{\"metric\":\"${metric_type}\",\"invoiceId\":\"${invoice_id}\"}"
+}
+
+var period_type_valid = "no"
+if ("${period_type}" == "timePeriod") {
+    var period_type_valid = "yes"
+}
+if ("${period_type}" == "invoiceId") {
+    var period_type_valid = "yes"
+}
+if ("${period_type_valid}" == "no") {
+    print "Invalid period_type. Use timePeriod or invoiceId."
+    terminate with error
+}
+
+if ("${request_scope_type}" == "billing_profile") {
+    var request_scope = "providers/Microsoft.Billing/billingAccounts/${billing_account_id}/billingProfiles/${billing_profile_id}"
+}
+
+if ("${request_scope_type}" == "subscription") {
+    if ("${subscription_id}" == "") {
+        print "subscription_id is empty. Set the azure_mca_subscription_id Environment variable when request_scope_type is subscription."
+        terminate with error
+    }
+    if ("${subscription_id}" == "$\{azure_mca_subscription_id\}") {
+        print "subscription_id is unset. Set the azure_mca_subscription_id Environment variable when request_scope_type is subscription."
+        terminate with error
+    }
+    if ("${period_type}" == "invoiceId") {
+        print "invoiceId extraction is only supported at MCA billing profile scope"
+        terminate with error
+    }
+    var request_scope = "subscriptions/${subscription_id}"
+}
+
+var scope_type_valid = "no"
+if ("${request_scope_type}" == "billing_profile") {
+    var scope_type_valid = "yes"
+}
+if ("${request_scope_type}" == "subscription") {
+    var scope_type_valid = "yes"
+}
+if ("${scope_type_valid}" == "no") {
+    print "Invalid request_scope_type. Use billing_profile or subscription."
+    terminate with error
+}
+
+#======================== Extract ========================#
+
+gosub authenticate()
+
+clear http_headers
+set http_savefile "${exportdir}/request_report_${extract_period}.json"
+set http_header "Accept: application/json"
+set http_header "Content-Type: application/json"
+set http_header "Authorization: Bearer ${access_token}"
+set http_body data ${request_body}
+
+print "Requesting Azure MCA Cost Details Report at scope ${request_scope} ..."
+buffer request_report = http POST "${resource}/${request_scope}/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2023-11-01"
+var request_status = ${HTTP_STATUS_CODE}
+
+if (${request_status} == 204) {
+    print "No cost data returned for this request."
+    terminate
+}
+
+if (${request_status} == 202) {
+    http get_header Location as poll_location
+    http get_header Retry-After as poll_wait
+    gosub poll_report()
+    gosub download_polled_report()
+}
+
+if (${request_status} == 200) {
+    gosub download_initial_report()
+}
+
+if (${request_status} !~ /200|202|204/) {
+    print Got HTTP status ${request_status}, expected 200, 202, or 204
+    print The server response was:
+    json format {request_report}
+    print {request_report}
+    terminate with error
+}
+
+print "Finished downloading Azure MCA Cost Details Report files."
+
+#======================== Subroutines ========================#
+
+subroutine authenticate {
+    print "Getting Microsoft Entra token..."
+    clear http_headers
+    uri encode-component client_id
+    uri encode-component client_secret
+    set http_body data "grant_type=client_credentials&client_id=${client_id}&client_secret=${client_secret}&scope=https%3A%2F%2Fmanagement.azure.com%2F.default"
+    set http_header "Content-Type: application/x-www-form-urlencoded"
+    set http_savefile "${exportdir}/auth_token.json"
+    buffer token = http POST "${auth_endpoint}"
+    if (${HTTP_STATUS_CODE} != 200) {
+        print Got HTTP status ${HTTP_STATUS_CODE} while authenticating
+        json format {token}
+        print {token}
+        terminate with error
+    }
+    var access_token = "$JSON{token}.[access_token]"
+    if (${access_token.LENGTH} < 20) {
+        print "Authentication response did not contain a valid access_token"
+        terminate with error
+    }
+}
+
+subroutine poll_report {
+    if (${poll_location.LENGTH} < 10) {
+        print "Location header is not present in the async response"
+        terminate with error
+    }
+    if (${poll_wait.LENGTH} == 0) {
+        var poll_wait = 60
+    }
+    clear http_headers
+    set http_header "Authorization: Bearer ${access_token}"
+    loop polling_loop 120 {
+        print "Waiting ${poll_wait} seconds for report generation..."
+        var poll_wait_ms = (${poll_wait} * 1000)
+        pause ${poll_wait_ms}
+        print "Polling ${poll_location} ..."
+        buffer report_ready = http GET "${poll_location}"
+        if (${HTTP_STATUS_CODE} == 200) {
+            exit_loop
+        }
+        if (${HTTP_STATUS_CODE} == 202) {
+            http get_header Retry-After as poll_wait
+        }
+        if (${HTTP_STATUS_CODE} == 204) {
+            print "No cost data returned for this request."
+            terminate
+        }
+        if (${HTTP_STATUS_CODE} !~ /200|202|204/) {
+            print Got HTTP status ${HTTP_STATUS_CODE} while polling report status
+            json format {report_ready}
+            print {report_ready}
+            terminate with error
+        }
+    }
+    if (${HTTP_STATUS_CODE} != 200) {
+        print "Report was not ready before the polling limit was reached"
+        terminate with error
+    }
+}
+
+subroutine download_polled_report {
+    clear http_headers
+    var csv_count = 0
+    var blob_count = "$JSON{report_ready}.[manifest].[blobCount]"
+    if ("${blob_count}" == "EXIVITY_NOT_FOUND") {
+        print "Report manifest does not contain a blobCount"
+        terminate with error
+    }
+    if (${blob_count} == 0) {
+        print "Report manifest does not contain any blobs"
+        terminate with error
+    }
+    foreach $JSON{report_ready}.[manifest].[blobs] as this_blob {
+        var csv_count += 1
+        var blob_url = "$JSON(this_blob).[blobLink]"
+        if (${blob_url.LENGTH} < 18) {
+            print "Report manifest blobLink is missing"
+            terminate with error
+        }
+        print "Downloading report blob ${csv_count} ..."
+        set http_savefile "${exportdir}/blob/azure_mca_${extract_period}_${csv_count}.csv"
+        buffer csv_report = http GET "${blob_url}"
+        if (${HTTP_STATUS_CODE} != 200) {
+            print Got HTTP status ${HTTP_STATUS_CODE} while downloading report blob
+            print {csv_report}
+            terminate with error
+        }
+    }
+}
+
+subroutine download_initial_report {
+    clear http_headers
+    var csv_count = 0
+    var blob_count = "$JSON{request_report}.[manifest].[blobCount]"
+    if ("${blob_count}" == "EXIVITY_NOT_FOUND") {
+        print "Report manifest does not contain a blobCount"
+        terminate with error
+    }
+    if (${blob_count} == 0) {
+        print "Report manifest does not contain any blobs"
+        terminate with error
+    }
+    foreach $JSON{request_report}.[manifest].[blobs] as this_blob {
+        var csv_count += 1
+        var blob_url = "$JSON(this_blob).[blobLink]"
+        if (${blob_url.LENGTH} < 18) {
+            print "Report manifest blobLink is missing"
+            terminate with error
+        }
+        print "Downloading report blob ${csv_count} ..."
+        set http_savefile "${exportdir}/blob/azure_mca_${extract_period}_${csv_count}.csv"
+        buffer csv_report = http GET "${blob_url}"
+        if (${HTTP_STATUS_CODE} != 200) {
+            print Got HTTP status ${HTTP_STATUS_CODE} while downloading report blob
+            print {csv_report}
+            terminate with error
+        }
+    }
+}
+
+subroutine format_start_date {
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var start_day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${month.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var start_month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var start_year = ${year.RESULT}
+    }
+}
+
+subroutine format_to_date {
+    match day "^[0-9]{6}([0-9]{2})" ${SUBARG_1}
+    if (${day.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var to_day = ${day.RESULT}
+    }
+    match month "^[0-9]{4}([0-9]{2})[0-9]{2}" ${SUBARG_1}
+    if (${month.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var to_month = ${month.RESULT}
+    }
+    match year "^([0-9]{4})[0-9]{4}" ${SUBARG_1}
+    if (${year.STATUS} != MATCH) {
+        terminate with error
+    } else {
+        var to_year = ${year.RESULT}
+    }
+}
+
+subroutine check_dateargument {
+    if (${ARGC} != 2) {
+        print "timePeriod extraction requires 2 arguments: FROM and TO dates in yyyyMMdd format"
+        terminate with error
+    }
+    if (${ARG_1} > ${ARG_2}) {
+        print "TO date cannot be before FROM date"
+        terminate with error
+    }
+    if (${ARG_1} == ${ARG_2}) {
+        print "TO date cannot be the same as FROM date"
+        terminate with error
+    }
+    gosub check_dateformat(${ARG_1})
+    gosub check_dateformat(${ARG_2})
+}
+
+subroutine check_dateformat {
+    match date "^([0-9]{4}(0[1-9]|1[0-2])(0[1-9]|1[0-9]|2[0-9]|3[0-1]))$" ${SUBARG_1}
+    if (${date.STATUS} != MATCH) {
+        print Argument error: ${SUBARG_1} is not in YYYYMMDD format
+        terminate with error
+    }
+}
