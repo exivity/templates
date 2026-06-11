@@ -1,0 +1,43 @@
+option loglevel = INFO
+option overwrite = NO
+
+var generate_services = "yes"   # set to "no" to skip finish/services and only export dataset
+
+import "system/extracted/ibm_cos_mgmt/${dataYear}${dataMonth}/${dataDate}_ibm_cos_inventory.csv" source ibmcos alias usage
+
+default dset ibmcos.usage
+create column service_name value "Used Storage (GB)"
+create column service_desc
+set service_desc as service_name
+create column category value "IBM COS Consumption"
+create column rate value 1
+create column cogs
+calculate column quantity as column usedBytes / value 1073741824
+create column units value "GB"
+create column instance
+set instance as vaultName
+create column customerKey
+set customerKey as @EXTRACT_AFTER(description, "/customer/show/")
+where (description !~ /.*\/customer\/show\/.*/) {
+    set customerKey to ""
+}
+
+export ibmcos.usage as "Exivity/MasterInput/${dataDate}_ibmcos_normalized.csv"
+
+if ("${generate_services}" == "yes") {
+    finish
+
+    services {
+        effective_date     = 20240101
+        service_type       = automatic
+        description_col    = service_name
+        category_col       = category
+        instance_col       = instance
+        usages_col         = service_name
+        set_rate_using     = rate
+        set_cogs_using     = cogs
+        interval           = monthly
+        unit_label_col     = units
+        consumption_col    = quantity
+    }
+}

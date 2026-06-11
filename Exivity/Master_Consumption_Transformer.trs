@@ -15,6 +15,10 @@ import "Exivity/MasterInput/${dataDate}_nutanix_normalized.*" source master alia
     pattern enabled
 }
 
+import "Exivity/MasterInput/${dataDate}_ibmcos_normalized.*" source master alias ibmcos options {
+    pattern enabled
+}
+
 # -------------------------------
 # vCloud -> common schema
 # -------------------------------
@@ -80,11 +84,43 @@ set metric_description as [service_desc]
 delete columns cluster_uuid cluster_name instance service_name quantity units rate cogs category service_desc
 
 # -------------------------------
+# IBM COS -> common schema
+# -------------------------------
+default dset master.ibmcos
+create column source_vendor value "IBM COS"
+create column usage_date value "${dataDate}"
+create column tenant_id
+set tenant_id as [customerKey]
+create column tenant_name
+set tenant_name as [customerKey]
+create column location value "IBM COS"
+create column resource_id
+set resource_id as [vaultUuid]
+create column resource_name
+set resource_name as [instance]
+create column metric_name
+set metric_name as [service_name]
+create column usage_quantity
+set usage_quantity as [quantity]
+create column usage_unit
+set usage_unit as [units]
+create column price_rate
+set price_rate as [rate]
+create column cost_amount
+set cost_amount as [cogs]
+create column usage_category
+set usage_category as [category]
+create column metric_description
+set metric_description as [service_desc]
+delete columns dataDate vaultName customerKey usedValue usedUnit usedBytes instance service_name quantity units rate cogs category service_desc
+
+# -------------------------------
 # Consolidated dataset
 # -------------------------------
 rename dset master.vcloud to master.final
 default dset master.final
 append master.nutanix to master.final
+append master.ibmcos to master.final
 
 export master.final as "Exivity/MasterOutput/${dataDate}_master_consumption.csv"
 

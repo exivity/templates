@@ -160,36 +160,10 @@ if ("${include_stats}" == "yes") {
 # Optional rates lookup
 #import "import/lookup/Nutanix_rates.csv" source nutanix alias rates
 
-# =====================================================================
-# Hourly: derive a per-row `hour` column from EXIVITY_FILE_NAME.
-# Filename shape is "<YYYYMMDD>_<HH>_<host>_Nutanix_<...>.csv", so the
-# hour is the substring between the first and second underscore.
-# =====================================================================
-if ("${granularity}" == "hourly") {
-    default dset nutanix.vcpus
-    create column hour
-    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
-
-    default dset nutanix.gbram
-    create column hour
-    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
-
-    default dset nutanix.provdisk
-    create column hour
-    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
-
-    default dset nutanix.usedstorage
-    create column hour
-    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
-
-    default dset nutanix.cpuuse
-    create column hour
-    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
-
-    default dset nutanix.memuse
-    create column hour
-    set hour as @EXTRACT_BEFORE(@EXTRACT_AFTER([EXIVITY_FILE_NAME], "_"), "_")
-}
+# NOTE:
+# We intentionally do not parse EXIVITY_FILE_NAME into an hour column.
+# Hourly mode is handled by importing hourly-stamped files and summing
+# quantity rows; an explicit hour column is not required for aggregation.
 
 # =====================================================================
 # vCPU service
