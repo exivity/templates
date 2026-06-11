@@ -9,18 +9,38 @@
 # Microsoft reference:
 # https://learn.microsoft.com/en-us/rest/api/cost-management/generate-cost-details-report/create-operation?view=rest-cost-management-2023-11-01
 #
+# -------------------------------------------------------------------
+# Recommended: store credentials in an Exivity Environment instead of
+# editing this file. Create the following Environment variables and
+# attach the Environment to the workflow that runs this extractor:
+#
+#   Required:
+#     azure_mca_tenant_id           # Microsoft Entra tenant GUID
+#     azure_mca_client_id           # App registration (client) GUID
+#     azure_mca_client_secret       # App registration secret value
+#     azure_mca_billing_account_id  # MCA billing account ID
+#     azure_mca_billing_profile_id  # MCA billing profile ID
+#
+#   Optional (only needed for non-default scopes/modes):
+#     azure_mca_subscription_id     # Used when request_scope_type=subscription
+#     azure_mca_invoice_id          # Used when period_type=invoiceId
+#
+# When the variables are missing, Exivity substitutes the literal
+# placeholder text below and the validation checks further on stop the
+# run with a clear message instead of calling Azure with bad input.
+# -------------------------------------------------------------------
 
-# Microsoft Entra application credentials
-public var tenant_id = "<tenant-guid>"
-public var client_id = "<application-client-guid>"
-public var client_secret = "<client-secret>"
+# Microsoft Entra application credentials (sourced from Environment)
+public var          tenant_id      = "${azure_mca_tenant_id}"
+public var          client_id      = "${azure_mca_client_id}"
+public encrypt var  client_secret  = "${azure_mca_client_secret}"
 
 # MCA billing profile scope for all subscriptions under that billing profile
-public var billing_account_id = "<billing-account-id>"
-public var billing_profile_id = "<billing-profile-id>"
+public var billing_account_id = "${azure_mca_billing_account_id}"
+public var billing_profile_id = "${azure_mca_billing_profile_id}"
 
 # Optional subscription fallback. Only used when request_scope_type is "subscription".
-public var subscription_id = "<optional-subscription-guid>"
+public var subscription_id = "${azure_mca_subscription_id}"
 
 # Use "billing_profile" for MCA all-up extraction or "subscription" for one subscription.
 public var request_scope_type = "billing_profile"
@@ -29,7 +49,7 @@ public var request_scope_type = "billing_profile"
 public var period_type = "timePeriod"
 
 # Required only when period_type is "invoiceId".
-public var invoice_id = "<optional-invoice-id>"
+public var invoice_id = "${azure_mca_invoice_id}"
 
 # Cost metric: ActualCost or AmortizedCost
 public var metric_type = "ActualCost"
@@ -42,6 +62,51 @@ public var auth_endpoint = "https://login.microsoftonline.com/${tenant_id}/oauth
 public var exportdir = "system/extracted/AzureMCA"
 public var loglevel = "INFO"
 loglevel ${loglevel}
+
+#======================== Credential validation ========================#
+# Stop early if the Environment variables were not supplied; Exivity
+# leaves the literal "${name}" string in place when a variable is unset.
+
+if ("${tenant_id}" == "") {
+    print "tenant_id is empty. Set the azure_mca_tenant_id Environment variable."
+    terminate with error
+}
+if ("${tenant_id}" == "$\{azure_mca_tenant_id\}") {
+    print "tenant_id is unset. Set the azure_mca_tenant_id Environment variable."
+    terminate with error
+}
+if ("${client_id}" == "") {
+    print "client_id is empty. Set the azure_mca_client_id Environment variable."
+    terminate with error
+}
+if ("${client_id}" == "$\{azure_mca_client_id\}") {
+    print "client_id is unset. Set the azure_mca_client_id Environment variable."
+    terminate with error
+}
+if ("${client_secret}" == "") {
+    print "client_secret is empty. Set the azure_mca_client_secret Environment variable."
+    terminate with error
+}
+if ("${client_secret}" == "$\{azure_mca_client_secret\}") {
+    print "client_secret is unset. Set the azure_mca_client_secret Environment variable."
+    terminate with error
+}
+if ("${billing_account_id}" == "") {
+    print "billing_account_id is empty. Set the azure_mca_billing_account_id Environment variable."
+    terminate with error
+}
+if ("${billing_account_id}" == "$\{azure_mca_billing_account_id\}") {
+    print "billing_account_id is unset. Set the azure_mca_billing_account_id Environment variable."
+    terminate with error
+}
+if ("${billing_profile_id}" == "") {
+    print "billing_profile_id is empty. Set the azure_mca_billing_profile_id Environment variable."
+    terminate with error
+}
+if ("${billing_profile_id}" == "$\{azure_mca_billing_profile_id\}") {
+    print "billing_profile_id is unset. Set the azure_mca_billing_profile_id Environment variable."
+    terminate with error
+}
 
 #======================== Input handling ========================#
 
@@ -57,11 +122,11 @@ if ("${period_type}" == "timePeriod") {
 
 if ("${period_type}" == "invoiceId") {
     if ("${invoice_id}" == "") {
-        print "invoice_id must be configured when period_type is invoiceId"
+        print "invoice_id is empty. Set the azure_mca_invoice_id Environment variable when period_type is invoiceId."
         terminate with error
     }
-    if ("${invoice_id}" == "<optional-invoice-id>") {
-        print "invoice_id must be configured when period_type is invoiceId"
+    if ("${invoice_id}" == "$\{azure_mca_invoice_id\}") {
+        print "invoice_id is unset. Set the azure_mca_invoice_id Environment variable when period_type is invoiceId."
         terminate with error
     }
     var extract_period = ${invoice_id}
@@ -86,11 +151,11 @@ if ("${request_scope_type}" == "billing_profile") {
 
 if ("${request_scope_type}" == "subscription") {
     if ("${subscription_id}" == "") {
-        print "subscription_id must be configured when request_scope_type is subscription"
+        print "subscription_id is empty. Set the azure_mca_subscription_id Environment variable when request_scope_type is subscription."
         terminate with error
     }
-    if ("${subscription_id}" == "<optional-subscription-guid>") {
-        print "subscription_id must be configured when request_scope_type is subscription"
+    if ("${subscription_id}" == "$\{azure_mca_subscription_id\}") {
+        print "subscription_id is unset. Set the azure_mca_subscription_id Environment variable when request_scope_type is subscription."
         terminate with error
     }
     if ("${period_type}" == "invoiceId") {
