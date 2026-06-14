@@ -1,0 +1,61 @@
+option loglevel = INFO
+#####################################################################
+#
+# Template Transformer for consolidating AWS CUR data
+# ----------------------------------------------------
+#
+# The following Transformers are required for loading AWS data:
+# 1. AWS Pre-Processor Transformer
+# 2. AWS Consolidation Transformer <---current Transformer
+#
+# This Transformer Template consoldiated pre-processed CUR data. 
+# In order to handle multiple payer accounts, additional changes
+# might be required. Reach out to support@exivity.com for more details.
+#
+#####################################################################
+
+import exported/aws/${dataYear}/${dataMonth}/${dataDate}_aws.csv source AWS alias consolidated  options {
+    pattern = yes
+}
+
+create mergedcolumn tmp using string "C|" column service_key 
+delete column service_key
+rename column tmp to service_key
+
+# Maintain a lookup file that will be used to map LinkedAccountIDs to PayerAccountIds during EIB
+# export. This lookup file needs to contain all mappings seen in the month-to-date
+where ([PayerAccountId] != "" && [LinkedAccountId] != "") {
+    copy rows to payer.lookup
+}
+default dset payer.lookup
+delete columns except PayerAccountId LinkedAccountId
+
+if ("${dataDay}" != "01") {
+    # From 2nd onwards, merge today's lookup data into the existing lookup file
+    import "exported/lookup/${dataYear}${dataMonth}_PayerAccountLookup.csv" source month alias lookup
+    append month.lookup to payer.lookup
+}
+
+aggregate notime PayerAccountId match LinkedAccountId match
+delete column EXIVITY_AGGR_COUNT
+export payer.lookup as lookup/${dataYear}${dataMonth}_PayerAccountLookup.csv
+
+default dset AWS.consolidated
+delete dset payer.lookup
+
+finish 
+
+option services = readonly
+services {
+  effective_date = 20230101
+  service_type = automatic
+  description_col = service_name # column name
+  category_col = ProductName # column with category value
+  instance_col = ResourceId # the unique instance i.e. vm-id, username, etc
+  usages_col = service_key # the column containing the name of the consumed service usagetype2
+  rate_col = rate # the column containing the rate values
+  cogs_col = cogs # the column containing the CoG rate values
+  interval  = individually
+  unit_label_col = unit # the column containing the unit label
+  consumption_col = UsageQuantity # the column containing the consumed quantity
+}
