@@ -116,7 +116,7 @@ if ("${period_type}" == "timePeriod") {
     gosub format_to_date(${ARG_2})
     var start_date = (@CONCAT("${start_year}","-","${start_month}","-","${start_day}"))
     var end_date = (@CONCAT("${to_year}","-","${to_month}","-","${to_day}"))
-    var extract_period = (@CONCAT("${ARG_1}","_","${ARG_2}"))
+    var extract_period = "${ARG_1}"
     var request_body = "{\"metric\":\"${metric_type}\",\"timePeriod\":{\"start\":\"${start_date}\",\"end\":\"${end_date}\"}}"
 }
 
