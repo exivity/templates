@@ -134,15 +134,15 @@ if (@DSET_EXISTS(master.azuremca)) {
     create column tenant_id
     set tenant_id as [SubscriptionId]
     create column tenant_name
-    set tenant_name as [SubscriptionName]
+    set tenant_name as [subscriptionName]
     create column location
-    set location as [ResourceLocation]
+    set location as [resourceLocation]
     create column resource_id
     set resource_id as [instance]
     create column resource_name
     set resource_name as [instance]
     create column metric_name
-    set metric_name as [service]
+    set metric_name as [service_name]
     create column usage_quantity
     set usage_quantity as [quantity]
     create column usage_unit
@@ -150,12 +150,12 @@ if (@DSET_EXISTS(master.azuremca)) {
     create column price_rate
     set price_rate as [rate]
     create column cost_amount
-    set cost_amount as [cost]
+    set cost_amount as [cogs]
     create column usage_category
     set usage_category as [category]
     create column metric_description
-    set metric_description as [service]
-    delete columns BillingAccountId BillingProfileId InvoiceSectionName SubscriptionId SubscriptionName ResourceGroup ResourceLocation ServiceFamily category instance service_key service unit quantity cost interval Date Tags
+    set metric_description as [service_name]
+    delete columns billingAccountId billingAccountName billingProfileId billingProfileName invoiceSectionName SubscriptionId subscriptionName ResourceGroup resourceGroupName resourceLocation serviceFamily category instance service_key service_name unit quantity cost interval date rate cogs
 }
 
 # -------------------------------

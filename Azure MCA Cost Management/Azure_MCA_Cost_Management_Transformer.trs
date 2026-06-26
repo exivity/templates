@@ -1,6 +1,3 @@
-option loglevel = INFO
-option overwrite = no
-
 # =====================================================================
 # Azure MCA Cost Management Transformer
 #
@@ -23,84 +20,102 @@ var generate_services = "yes"
 # Set to "no" to skip the MasterInput export when blending is not used.
 var export_to_masterinput = "yes"
 
-# The Extractor writes blobs to system/extracted/AzureMCA/blob/.
-# Filenames are azure_mca_<period>_<n>.csv where <period> is either
-# yyyymmdd_yyyymmdd (timePeriod mode) or the invoice id (invoiceId mode).
-import "system/extracted/AzureMCA/blob/azure_mca_${dataYear}${dataMonth}*_*.csv" source azure alias mca options {
+option loglevel = DEBUGX
+option embed = yes
+option mode = permissive
+
+# The extractor writes blobs to system/extracted/AzureMCA/blob/ using
+# azure_mca_<dataDate>_<n>.csv. Preprocess the first blob before import
+# so Transcript handles the Cost Details CSV consistently.
+preprocess "system/extracted/AzureMCA/blob/azure_mca_${dataDate}_1.csv" as "system/extracted/AzureMCA/blob/azure_mca_${dataDate}_PP.csv"
+
+import "system/extracted/AzureMCA/blob/azure_mca_${dataDate}_PP.csv" source azure alias mca options {
     pattern enabled
     escaped = yes
-    filter = ([Date] =~ /${dataMonth}.${dataDay}.${dataYear}.*/)
+    filter = ([date] =~ /${dataMonth}.${dataDay}.${dataYear}.*/)
 }
 
 default dset azure.mca
-
-# ---------------------------------------------------------------------
-# Column normalization
-# ---------------------------------------------------------------------
-# Cost Details CSV column names are documented by Microsoft and stable.
-# Only the billing currency header has a known alias; everything else
-# matches the canonical casing used below.
-rename column ${/^[Bb]illing[Cc]urrency[Cc]ode$/} to BillingCurrency
 
 # ---------------------------------------------------------------------
 # Exivity-friendly columns
 # ---------------------------------------------------------------------
 option overwrite = yes
 
-# Instance: prefer the resource id; fall back to MeterName for
-# subscription-level charges (taxes, marketplace fees) without a resource.
-create mergedcolumn instance from "ResourceId" /^.*\/([^/]+)$/
+rename column billingCurrency to BillingCurrency
+rename column meterCategory to category
+
+create mergedcolumn instance from ResourceId /.*\/(.*)$/
+lowercase values in column instance
+
 where ([instance] == "") {
-    set instance as MeterName
+    set instance as meterName
 }
 where ([instance] == "EXIVITY_NOT_FOUND") {
-    set instance as MeterName
+    set instance as meterName
 }
 
-# Service description: Marketplace items roll up under Publisher / Plan.
-rename column ProductName to service
-where ([PublisherType] == "Marketplace") {
-    set service = (@CONCAT([PublisherName], " - ", [PlanName]))
-    set MeterCategory to "Marketplace"
+where ([meterRegion] == "") {
+    set meterRegion as resourceLocation
+}
+where ([meterRegion] == "EXIVITY_NOT_FOUND") {
+    set meterRegion as resourceLocation
 }
 
-rename column MeterCategory to category
+create mergedcolumn service_key separator "|" from pricingModel ProductId meterId meterRegion
+create mergedcolumn service_name separator "-" from ProductName meterName
 
-# Stable service key. PartNumber is unique per MCA SKU so concatenating
-# it with the friendly service name gives a deterministic identifier.
-create column service_key
-set service_key = (@CONCAT([service], "_", [PartNumber], "_MCA"))
+where ([publisherType] == "Marketplace") {
+    set service_name = (@CONCAT([publisherName], "-", [productOrderName]))
+    set category to "Marketplace"
+}
 
-# Reservations and savings plan purchases are recognized via UnitOfMeasure.
 create column unit
-set unit = (@CONCAT([UnitOfMeasure], "/", [ChargeType], " Hours"))
+set unit = (@CONCAT([unitOfMeasure], "/", [chargeType], " Hours"))
 replace "Unassigned/" in unit
+
 where ([unit] =~ /.*Purchase.*/) {
     set category to "Reservations"
 }
 
-rename column Quantity to quantity
-rename column CostInBillingCurrency to cost
+rename column costInBillingCurrency to cost
 create column interval value "individually"
 
 option overwrite = no
 
 # ---------------------------------------------------------------------
-# Aggregate to a manageable level and derive rate / cogs
+# Calculate one rate per service key, then correlate it back to detail
+# rows so the original consumption rows stay intact for reporting.
 # ---------------------------------------------------------------------
-delete columns except BillingAccountId BillingProfileId InvoiceSectionName SubscriptionId SubscriptionName ResourceGroup ResourceLocation ServiceFamily category instance service_key service unit quantity cost interval Date Tags
+delete columns except billingAccountId billingAccountName billingProfileId billingProfileName invoiceSectionName SubscriptionId subscriptionName ResourceGroup resourceGroupName resourceLocation serviceFamily category instance service_key service_name unit quantity cost interval date
 
-aggregate azure.mca notime default_function match quantity sum cost sum
+where ([service_key] != "") {
+    copy rows to azure.tmp
+}
 
+default dset azure.tmp
+delete columns except service_key quantity cost
+aggregate azure.tmp notime default_function match quantity sum cost sum
+delete columns EXIVITY_AGGR_COUNT
 create column rate
 set rate = ([cost] / [quantity])
+
+default dset azure.mca
+correlate rate using service_key assuming azure.tmp
 create column cogs
 set cogs as rate
 
+where ([subscriptionName] == "") {
+    set subscriptionName to "Subscription_Undefined"
+    set SubscriptionId to "Subscription_Undefined"
+}
+where ([subscriptionName] == "EXIVITY_NOT_FOUND") {
+    set subscriptionName to "Subscription_Undefined"
+    set SubscriptionId to "Subscription_Undefined"
+}
+
 # Example uplift hook - leave commented for the generic template
 # set rate = [rate] * 1.05
-
-delete columns EXIVITY_AGGR_COUNT
 
 # ---------------------------------------------------------------------
 # Optional export for the master/blend transformer.
@@ -116,13 +131,14 @@ if ("${export_to_masterinput}" == "yes") {
 # Stand-alone services / RDF output
 # ---------------------------------------------------------------------
 if ("${generate_services}" == "yes") {
+    option services = overwrite
     finish
 
     services {
-        effective_date  = 20240101
+        effective_date  = 20260101
         service_type    = automatic
         usages_col      = service_key
-        description_col = service
+        description_col = service_name
         category_col    = category
         instance_col    = instance
         rate_col        = rate

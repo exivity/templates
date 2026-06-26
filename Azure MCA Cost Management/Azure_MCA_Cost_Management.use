@@ -112,12 +112,9 @@ if ("${billing_profile_id}" == "$\{azure_mca_billing_profile_id\}") {
 
 if ("${period_type}" == "timePeriod") {
     gosub check_dateargument()
-    gosub format_start_date(${ARG_1})
-    gosub format_to_date(${ARG_2})
-    var start_date = (@CONCAT("${start_year}","-","${start_month}","-","${start_day}"))
-    var end_date = (@CONCAT("${to_year}","-","${to_month}","-","${to_day}"))
-    var extract_period = (@CONCAT("${ARG_1}","_","${ARG_2}"))
-    var request_body = "{\"metric\":\"${metric_type}\",\"timePeriod\":{\"start\":\"${start_date}\",\"end\":\"${end_date}\"}}"
+    var date_counter = (@DATEDIFF(${ARG_2},${ARG_1}))
+    var date_counter = (${date_counter}+1)
+    var extract_date = ${ARG_1}
 }
 
 if ("${period_type}" == "invoiceId") {
@@ -181,39 +178,22 @@ if ("${scope_type_valid}" == "no") {
 
 gosub authenticate()
 
-clear http_headers
-set http_savefile "${exportdir}/request_report_${extract_period}.json"
-set http_header "Accept: application/json"
-set http_header "Content-Type: application/json"
-set http_header "Authorization: Bearer ${access_token}"
-set http_body data ${request_body}
-
-print "Requesting Azure MCA Cost Details Report at scope ${request_scope} ..."
-buffer request_report = http POST "${resource}/${request_scope}/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2023-11-01"
-var request_status = ${HTTP_STATUS_CODE}
-
-if (${request_status} == 204) {
-    print "No cost data returned for this request."
-    terminate
+if ("${period_type}" == "timePeriod") {
+    loop extract_days ${date_counter} {
+        var extract_period = ${extract_date}
+        gosub format_start_date(${extract_date})
+        var next_date = (@DATEADD(${extract_date}, 1))
+        gosub format_to_date(${next_date})
+        var start_date = (@CONCAT("${start_year}","-","${start_month}","-","${start_day}"))
+        var end_date = (@CONCAT("${to_year}","-","${to_month}","-","${to_day}"))
+        var request_body = "{\"metric\":\"${metric_type}\",\"timePeriod\":{\"start\":\"${start_date}\",\"end\":\"${end_date}\"}}"
+        gosub request_report()
+        var extract_date = ${next_date}
+    }
 }
 
-if (${request_status} == 202) {
-    http get_header Location as poll_location
-    http get_header Retry-After as poll_wait
-    gosub poll_report()
-    gosub download_polled_report()
-}
-
-if (${request_status} == 200) {
-    gosub download_initial_report()
-}
-
-if (${request_status} !~ /200|202|204/) {
-    print Got HTTP status ${request_status}, expected 200, 202, or 204
-    print The server response was:
-    json format {request_report}
-    print {request_report}
-    terminate with error
+if ("${period_type}" == "invoiceId") {
+    gosub request_report()
 }
 
 print "Finished downloading Azure MCA Cost Details Report files."
@@ -242,7 +222,46 @@ subroutine authenticate {
     }
 }
 
+subroutine request_report {
+    clear http_headers
+    set http_savefile "${exportdir}/request_report_${extract_period}.json"
+    set http_header "Accept: application/json"
+    set http_header "Content-Type: application/json"
+    set http_header "Authorization: Bearer ${access_token}"
+    set http_body data ${request_body}
+
+    print "Requesting Azure MCA Cost Details Report for ${extract_period} at scope ${request_scope} ..."
+    buffer request_report = http POST "${resource}/${request_scope}/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2023-11-01"
+    var request_status = ${HTTP_STATUS_CODE}
+
+    if (${request_status} == 204) {
+        print "No cost data returned for ${extract_period}."
+    }
+
+    if (${request_status} == 202) {
+        http get_header Location as poll_location
+        http get_header Retry-After as poll_wait
+        gosub poll_report()
+        if ("${report_ready_status}" == "yes") {
+            gosub download_polled_report()
+        }
+    }
+
+    if (${request_status} == 200) {
+        gosub download_initial_report()
+    }
+
+    if (${request_status} !~ /200|202|204/) {
+        print Got HTTP status ${request_status}, expected 200, 202, or 204
+        print The server response was:
+        json format {request_report}
+        print {request_report}
+        terminate with error
+    }
+}
+
 subroutine poll_report {
+    var report_ready_status = "no"
     if (${poll_location.LENGTH} < 10) {
         print "Location header is not present in the async response"
         terminate with error
@@ -259,14 +278,15 @@ subroutine poll_report {
         print "Polling ${poll_location} ..."
         buffer report_ready = http GET "${poll_location}"
         if (${HTTP_STATUS_CODE} == 200) {
+            var report_ready_status = "yes"
             exit_loop
         }
         if (${HTTP_STATUS_CODE} == 202) {
             http get_header Retry-After as poll_wait
         }
         if (${HTTP_STATUS_CODE} == 204) {
-            print "No cost data returned for this request."
-            terminate
+            print "No cost data returned for ${extract_period}."
+            exit_loop
         }
         if (${HTTP_STATUS_CODE} !~ /200|202|204/) {
             print Got HTTP status ${HTTP_STATUS_CODE} while polling report status
@@ -275,9 +295,11 @@ subroutine poll_report {
             terminate with error
         }
     }
-    if (${HTTP_STATUS_CODE} != 200) {
-        print "Report was not ready before the polling limit was reached"
-        terminate with error
+    if ("${report_ready_status}" == "no") {
+        if (${HTTP_STATUS_CODE} != 204) {
+            print "Report was not ready before the polling limit was reached"
+            terminate with error
+        }
     }
 }
 
@@ -291,6 +313,10 @@ subroutine download_polled_report {
     }
     if (${blob_count} == 0) {
         print "Report manifest does not contain any blobs"
+        terminate with error
+    }
+    if (${blob_count} > 1) {
+        print "Report manifest contains ${blob_count} blobs for ${extract_period}. The transformer currently supports one blob per day."
         terminate with error
     }
     foreach $JSON{report_ready}.[manifest].[blobs] as this_blob {
@@ -321,6 +347,10 @@ subroutine download_initial_report {
     }
     if (${blob_count} == 0) {
         print "Report manifest does not contain any blobs"
+        terminate with error
+    }
+    if (${blob_count} > 1) {
+        print "Report manifest contains ${blob_count} blobs for ${extract_period}. The transformer currently supports one blob per day."
         terminate with error
     }
     foreach $JSON{request_report}.[manifest].[blobs] as this_blob {
@@ -390,10 +420,6 @@ subroutine check_dateargument {
     }
     if (${ARG_1} > ${ARG_2}) {
         print "TO date cannot be before FROM date"
-        terminate with error
-    }
-    if (${ARG_1} == ${ARG_2}) {
-        print "TO date cannot be the same as FROM date"
         terminate with error
     }
     gosub check_dateformat(${ARG_1})
