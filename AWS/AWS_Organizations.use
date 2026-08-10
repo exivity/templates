@@ -124,7 +124,7 @@ loop organization_loop {
     	# Define the fields to export to match the headers
     	csv write_field organization $JSON(this_org).[Id]
     	csv write_field organization $JSON(this_org).[Name]
-    	csv write_field organization $JSON(this_org).[Status]
+    	csv write_field organization $JSON(this_org).[State]
     }
 
     var NextToken = $JSON{organizations}.[NextToken]
